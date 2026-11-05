@@ -19,6 +19,7 @@ import {
   resolveTtsVoice,
 } from "./geminiAudio";
 import { runDir } from "./paths";
+import { ensureAbsRunFile } from "./storage";
 import { audioPlanSchema, type AudioPlan, type MetaRecord } from "./schema";
 import { prepareRunInputs } from "./inputPrep";
 import { formatInputsForScript, parseRunInputs, type RunInputAsset } from "./inputs";
@@ -663,11 +664,31 @@ export async function jobAudioMix(run: RunRow): Promise<void> {
   const plan = parseAudioPlan(run);
   const speechDir = path.join(runDir(run.id), "audio", "speech");
   const musicDir = path.join(runDir(run.id), "audio", "music");
+  // Pull bed / speech from bucket when this container's scratch was cleared.
+  for (const rel of [
+    "audio/music/bed_path.txt",
+    "audio/music/bed.wav",
+    "audio/music/bed.mp3",
+    "audio/speech/cue_0.wav",
+  ]) {
+    try {
+      await ensureAbsRunFile(path.join(runDir(run.id), rel));
+    } catch {
+      /* optional */
+    }
+  }
   const bedHint = path.join(musicDir, "bed_path.txt");
   let musicPath: string | null = null;
   if (fs.existsSync(bedHint)) {
     const p = fs.readFileSync(bedHint, "utf8").trim();
-    if (p && fs.existsSync(p)) musicPath = p;
+    if (p) {
+      try {
+        await ensureAbsRunFile(p);
+      } catch {
+        /* ignore */
+      }
+      if (fs.existsSync(p)) musicPath = p;
+    }
   }
   if (!musicPath) {
     for (const name of ["bed.wav", "bed.mp3"]) {

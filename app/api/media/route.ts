@@ -59,6 +59,11 @@ export async function GET(req: NextRequest) {
   const contentType = TYPES[ext] ?? "application/octet-stream";
   const size = st.size;
   const range = req.headers.get("range");
+  const asDownload = req.nextUrl.searchParams.get("download") === "1";
+  const filename = path.basename(abs).replace(/[^\w.\-()+ ]+/g, "_") || "download";
+  const disposition = asDownload
+    ? `attachment; filename="${filename}"`
+    : `inline; filename="${filename}"`;
 
   if (range) {
     const m = /^bytes=(\d*)-(\d*)$/i.exec(range.trim());
@@ -80,6 +85,7 @@ export async function GET(req: NextRequest) {
         "Content-Type": contentType,
         "Content-Length": String(chunkSize),
         "Content-Range": `bytes ${start}-${clippedEnd}/${size}`,
+        "Content-Disposition": disposition,
         "Accept-Ranges": "bytes",
         "Cache-Control": "private, max-age=60",
       },
@@ -92,6 +98,7 @@ export async function GET(req: NextRequest) {
     headers: {
       "Content-Type": contentType,
       "Content-Length": String(size),
+      "Content-Disposition": disposition,
       "Accept-Ranges": "bytes",
       "Cache-Control": "private, max-age=60",
     },

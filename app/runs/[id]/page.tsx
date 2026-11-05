@@ -226,7 +226,11 @@ export default function RunDetailPage() {
   if (!data) return <p>Loading…</p>;
 
   const { run, script, audioPlan, variants, stitch, finalPath, audioDeliverables, sceneProgress } = data;
-  const isAudio = run.pipeline_mode === "audio";
+  const mode = run.pipeline_mode || "auto";
+  const isAudio = mode === "audio";
+  const isDoc = mode === "html" || mode === "image" || mode === "pptx" || mode === "pdf";
+  const isImageDoc = mode === "image";
+  const isVideo = !isAudio && !isDoc;
   const audioMasters =
     audioDeliverables && audioDeliverables.length > 0
       ? audioDeliverables
@@ -249,8 +253,12 @@ export default function RunDetailPage() {
       : sceneProgress?.nextAction === "stitch"
         ? "Resume — stitch"
         : "Resume";
+  const downloadPath = isAudio ? audioMasters[0]?.path : finalPath;
   const masterReady =
-    (finalPath || (isAudio && audioMasters[0]?.path)) && (run.status === "exported" || run.gate === "audit");
+    Boolean(downloadPath) && (run.status === "exported" || run.gate === "audit");
+  const downloadName = downloadPath
+    ? downloadPath.replace(/\\/g, "/").split("/").pop() || "download"
+    : "download";
 
   return (
     <div>
@@ -309,9 +317,27 @@ export default function RunDetailPage() {
         )}
       </div>
 
-      {masterReady && (
+      {masterReady && downloadPath && (
         <>
-          {!isAudio && finalPath && <MasterVideo src={mediaSrc(finalPath)} aspect={run.aspect_ratio} />}
+          {isVideo && finalPath && <MasterVideo src={mediaSrc(finalPath)} aspect={run.aspect_ratio} />}
+          {isImageDoc && finalPath && (
+            <div className="card" style={{ marginBottom: 16, padding: 12 }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={mediaSrc(finalPath)}
+                alt="Generated still"
+                style={{ display: "block", maxWidth: "100%", height: "auto", margin: "0 auto" }}
+              />
+            </div>
+          )}
+          {isDoc && !isImageDoc && finalPath && (
+            <div className="card" style={{ marginBottom: 16 }}>
+              <p className="sub" style={{ margin: 0 }}>
+                Document ready ({downloadName}). Preview in the browser isn’t available for this
+                format — use Download.
+              </p>
+            </div>
+          )}
           {isAudio && audioMasters.length > 0 && (
             <div className="card" style={{ marginBottom: 16 }}>
               {audioMasters.map((m) => (
@@ -333,8 +359,8 @@ export default function RunDetailPage() {
             </div>
             <a
               className="btn primary"
-              href={mediaSrc(isAudio ? audioMasters[0]!.path : finalPath!)}
-              download
+              href={`${mediaSrc(downloadPath)}&download=1`}
+              download={downloadName}
             >
               Download
             </a>

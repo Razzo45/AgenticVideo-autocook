@@ -1053,7 +1053,15 @@ export async function advanceAutoRun(runId: string): Promise<void> {
   if (run.gate === "clip") {
     const shotIndex = run.current_shot_index;
     const script = parseScript(run);
-    const pool = (await listVariants(run.id, shotIndex, "clip")).filter(
+    const clipRows = await listVariants(run.id, shotIndex, "clip");
+    for (const v of clipRows) {
+      try {
+        await ensureAbsRunFile(v.path);
+      } catch {
+        /* missing in bucket */
+      }
+    }
+    const pool = clipRows.filter(
       (v) => !v.rejected && fs.existsSync(v.path) && variantPasses(v),
     );
     if (!pool.length) throw new Error(`Scene ${shotIndex + 1}: no usable clips`);

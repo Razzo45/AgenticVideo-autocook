@@ -544,7 +544,14 @@ export function RunGate({
               ))}
             </div>
           )}
-          {finalPath && <MasterVideo src={mediaSrc(finalPath)} aspect={run.aspect_ratio} />}
+          {finalPath &&
+            run.pipeline_mode !== "html" &&
+            run.pipeline_mode !== "image" &&
+            run.pipeline_mode !== "pptx" &&
+            run.pipeline_mode !== "pdf" &&
+            run.pipeline_mode !== "audio" && (
+              <MasterVideo src={mediaSrc(finalPath)} aspect={run.aspect_ratio} />
+            )}
           {/* Conformance probe is internal — operators only approve / reject. */}
           {stitch?.report?.pass === false && (
             <p className="err">Delivery checks failed — reject and regenerate, or fix upstream.</p>

@@ -132,8 +132,10 @@ export async function resolveDocFinalPath(runId: string): Promise<string | null>
     "final.htm",
     "final.zip",
     "final.png",
-    "final.svg",
+    "final.jpg",
+    "final.jpeg",
     "final.webp",
+    "final.svg",
     "cook_result.json",
   ];
   for (const name of candidates) {
