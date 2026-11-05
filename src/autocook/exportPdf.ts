@@ -75,6 +75,8 @@ async function chromiumHtmlToPdf(htmlPath: string, outPdf: string): Promise<bool
     const ok = await tryExec(bin, [
       "--headless=new",
       "--disable-gpu",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
       "--no-pdf-header-footer",
       `--print-to-pdf=${outPdf}`,
       fileUrl,
