@@ -1031,7 +1031,15 @@ export async function advanceAutoRun(runId: string): Promise<void> {
     const script = parseScript(run);
     const shotIndex = run.current_shot_index;
     const transition = resolveShotTransition(script.shots[shotIndex], shotIndex);
-    const pool = (await listVariants(run.id, shotIndex, "keyframe")).filter(
+    const kfRows = await listVariants(run.id, shotIndex, "keyframe");
+    for (const v of kfRows) {
+      try {
+        await ensureAbsRunFile(v.path);
+      } catch {
+        /* missing in bucket */
+      }
+    }
+    const pool = kfRows.filter(
       (v) => !v.rejected && fs.existsSync(v.path) && variantPasses(v),
     );
     if (!pool.length) throw new Error(`Scene ${shotIndex + 1}: no usable keyframes`);
