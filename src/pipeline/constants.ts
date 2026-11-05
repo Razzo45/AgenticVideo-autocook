@@ -25,7 +25,8 @@ export const MAX_DURATION_DIRECT_SEC = 180;
  * Auto pipeline: long form = N short scenes (model max clip, typically ~8s) concatenated.
  * Duration is a minimum plan length — storyboard fills with max-length scenes, then stitch.
  */
-export const MIN_DURATION_AUTO_SEC = 8;
+/** Floor for §3.1 session duration — short Omni product spots are often ~6s. */
+export const MIN_DURATION_AUTO_SEC = 4;
 export const MAX_DURATION_AUTO_SEC = 300;
 /** Typical Veo max clip — used for UI estimates only (planner reads the model catalog). */
 export const TYPICAL_AUTO_CLIP_SEC = 8;

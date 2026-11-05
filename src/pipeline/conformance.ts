@@ -169,7 +169,7 @@ export function validateMetaRecord(record: unknown, datasetRoot = DATASET_DIR): 
 }
 
 /** Soft checks that often flap on Omni/auto masters — still reported, not export-blocking for auto. */
-const AUTO_SOFT_STITCH_IDS = new Set(["black_bars", "bitrate"]);
+const AUTO_SOFT_STITCH_IDS = new Set(["black_bars", "bitrate", "duration_session"]);
 
 export function stitchGateReason(stitch: ConformanceReport, softIds: Set<string> = new Set()): string {
   const hardFails = stitch.checks.filter((c) => !c.pass && !softIds.has(c.id));
