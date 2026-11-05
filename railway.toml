@@ -1,10 +1,5 @@
-# Prefer per-service configs (railway.web.toml / railway.worker.toml).
-# Kept so `railway up` without an explicit config still builds the web image.
-[build]
-dockerfilePath = "Dockerfile.web"
-
-[deploy]
-healthcheckPath = "/api/health"
-healthcheckTimeout = 300
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 5
+# Shared fallback only. Prefer per-service files:
+#   railway.web.toml  → web (Dockerfile.web)
+#   railway.worker.toml → worker (Dockerfile.worker)
+# Set each service's "Config as Code" path in Railway to the matching file,
+# or set build.dockerfilePath via `railway environment edit --service-config`.
