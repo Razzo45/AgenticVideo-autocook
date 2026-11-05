@@ -1,0 +1,150 @@
+{
+  "$schema": "./aigc-meta.schema.json",
+  "dataset_name": "agentic_poc",
+  "session_id": "auto-sess_ecom_live-mug-8s",
+  "records": [
+    {
+      "uniq_id": "aigc_auto-sess_ecom_live-mug-8s_s0_kf",
+      "modality": "image",
+      "generation_type": "agent_image",
+      "media_id": "auto-sess_ecom_live-mug-8s_shot0_kf.png",
+      "media_desc": "Slow push-in on a handcrafted ceramic mug on a sunlit wooden table as gentle wisps of steam rise into the soft daylight.",
+      "media_path": "image/agent_generated/auto-sess_ecom_live-mug-8s_shot0_kf.png",
+      "format": "png",
+      "width": 2560,
+      "height": 1440,
+      "duration": null,
+      "fps": null,
+      "resolution": null,
+      "prompt": "Medium close-up 16:9 composition of a handcrafted matte oatmeal-glazed ceramic mug resting slightly off-center on a warm, textured natural oak wooden table. Soft, diffused morning daylight streams from the left side, casting a gentle, elongated soft shadow across the wood grain. Thin, delicate wisps of translucent white steam begin rising from the dark hot liquid inside the mug, catching the soft backlight against a clean, out-of-focus warm beige plaster background. No people, no text, no logos, shallow depth of field with crisp focus on the ceramic rim and tactile glaze texture.",
+      "model_name": "omni:text_to_video",
+      "category": "E-commerce & Advertising",
+      "tags": [
+        "ceramic mug",
+        "product showcase",
+        "wooden table",
+        "soft daylight",
+        "steam",
+        "minimalist",
+        "calm",
+        "commercial"
+      ],
+      "session_id": "auto-sess_ecom_live-mug-8s",
+      "round_index": null,
+      "parent_uniq_id": null,
+      "audio_path": null,
+      "origin_media_id": null,
+      "origin_media_path": null,
+      "mask_path": null,
+      "reference_images": [],
+      "ext_json": {
+        "source_platform": "Internal Pipeline",
+        "code_type": null,
+        "aspect_ratio": "16:9",
+        "content_safety": "pass",
+        "aesthetic_score": 7,
+        "consistency_score": null,
+        "visual_style": "Minimalist lifestyle product cinematography in 16:9, shot on an 85mm macro-capable prime lens at f/2.8, soft directional morning window light creating gentle highlights on the ceramic glaze and backlit wisps of steam, warm natural color palette, no text or logos."
+      }
+    },
+    {
+      "uniq_id": "aigc_auto-sess_ecom_live-mug-8s_s0",
+      "modality": "video",
+      "generation_type": "agent_video",
+      "media_id": "auto-sess_ecom_live-mug-8s_shot0.mp4",
+      "media_desc": "Slow push-in on a handcrafted ceramic mug on a sunlit wooden table as gentle wisps of steam rise into the soft daylight.",
+      "media_path": "video/agent_generated/auto-sess_ecom_live-mug-8s_shot0.mp4",
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "duration": 8,
+      "fps": 24,
+      "resolution": [
+        1920,
+        1080
+      ],
+      "prompt": "The camera performs an ultra-slow, smooth push-in toward the ceramic mug on the wooden table over 8 seconds. Delicate curls of white steam rise continuously and drift gently upward through the soft morning sunbeam, swirling organically before dissipating in the warm air. Subtle surface ripples shimmer faintly on the dark hot beverage inside the rim. Quiet, peaceful room tone with a very faint, soothing ambient morning stillness; no people, no spoken dialogue, no text, and no logos.",
+      "model_name": "google/gemini-omni-1.1-flash",
+      "category": "E-commerce & Advertising",
+      "tags": [
+        "ceramic mug",
+        "product showcase",
+        "wooden table",
+        "soft daylight",
+        "steam",
+        "minimalist",
+        "calm",
+        "commercial"
+      ],
+      "session_id": "auto-sess_ecom_live-mug-8s",
+      "round_index": 0,
+      "parent_uniq_id": null,
+      "audio_path": "audio/generated/auto-sess_ecom_live-mug-8s_shot0.m4a",
+      "origin_media_id": null,
+      "origin_media_path": null,
+      "mask_path": null,
+      "reference_images": [
+        "reference/input_images/auto-sess_ecom_live-mug-8s_shot0_kf.png"
+      ],
+      "ext_json": {
+        "source_platform": "Internal Pipeline",
+        "code_type": "H.264",
+        "aspect_ratio": "16:9",
+        "content_safety": "pass",
+        "aesthetic_score": 7,
+        "consistency_score": 80,
+        "visual_style": "Minimalist lifestyle product cinematography in 16:9, shot on an 85mm macro-capable prime lens at f/2.8, soft directional morning window light creating gentle highlights on the ceramic glaze and backlit wisps of steam, warm natural color palette, no text or logos."
+      }
+    },
+    {
+      "uniq_id": "aigc_auto-sess_ecom_live-mug-8s_final",
+      "modality": "video",
+      "generation_type": "edit_video",
+      "media_id": "auto-sess_ecom_live-mug-8s_final.mp4",
+      "media_desc": "An 8-second calm product showcase in 16:9 featuring a handcrafted ceramic mug on a warm wooden table in soft morning daylight with delicate steam rising gently.",
+      "media_path": "video/edited/auto-sess_ecom_live-mug-8s_final.mp4",
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "duration": 8,
+      "fps": 30,
+      "resolution": [
+        1920,
+        1080
+      ],
+      "prompt": "Concatenate the approved storyboard clips into one continuous session cut.",
+      "model_name": "ffmpeg",
+      "category": "E-commerce & Advertising",
+      "tags": [
+        "ceramic mug",
+        "product showcase",
+        "wooden table",
+        "soft daylight",
+        "steam",
+        "minimalist",
+        "calm",
+        "commercial"
+      ],
+      "session_id": "auto-sess_ecom_live-mug-8s",
+      "round_index": 1,
+      "parent_uniq_id": "aigc_auto-sess_ecom_live-mug-8s_s0",
+      "audio_path": "audio/generated/auto-sess_ecom_live-mug-8s_final.m4a",
+      "origin_media_id": "auto-sess_ecom_live-mug-8s_shot0.mp4",
+      "origin_media_path": "video/agent_generated/auto-sess_ecom_live-mug-8s_shot0.mp4",
+      "mask_path": null,
+      "reference_images": [],
+      "ext_json": {
+        "source_platform": "Internal Pipeline",
+        "code_type": "H.264",
+        "aspect_ratio": "16:9",
+        "content_safety": "pass",
+        "aesthetic_score": 7,
+        "consistency_score": 80,
+        "visual_style": "Minimalist lifestyle product cinematography in 16:9, shot on an 85mm macro-capable prime lens at f/2.8, soft directional morning window light creating gentle highlights on the ceramic glaze and backlit wisps of steam, warm natural color palette, no text or logos.",
+        "origin_instruction": "Session stitch of approved agent_video shots",
+        "human_instruction": "Approve stitched session",
+        "score": 80
+      }
+    }
+  ]
+}

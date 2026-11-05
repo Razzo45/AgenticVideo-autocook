@@ -1,0 +1,43 @@
+{
+  "$schema": "./aigc-meta.schema.json",
+  "dataset_name": "agentic_poc",
+  "session_id": "audio-sess_ecom_milas-bakery-30s",
+  "records": [
+    {
+      "uniq_id": "aigc_audio-sess_ecom_milas-bakery-30s_audio_final",
+      "modality": "audio",
+      "generation_type": "agent_audio",
+      "media_id": "audio-sess_ecom_milas-bakery-30s_final.m4a",
+      "media_desc": "A warm 30-second radio commercial for Mila's Bakery featuring an Eastern European female voiceover, lo-fi cafe music, and natural bakery sound effects.",
+      "media_path": "audio/agent_generated/audio-sess_ecom_milas-bakery-30s_final.m4a",
+      "format": "m4a",
+      "width": 1,
+      "height": 1,
+      "duration": 31.24,
+      "fps": null,
+      "resolution": null,
+      "prompt": "I'm the Ad Manager at a radio station, and I need a finished commercial for Mila's Bakery's fresh breakfast menu and limited-time morning offer. It must be exactly 30 seconds, ready for broadcast.\n\nThe supplied materials include the approved commercial script, a voice reference recording, and a RADIO AD EDITING BRIEF FOR SOUND ENGINEER.\n\nUse the Radio Ad Editing Brief as the style reference for the finished commercial, following its voice, music, sound design, pacing, and mixing standards. Use the voice recording as a general stylistic and performance reference for tone and pacing.\n\nThe voiceover should have a warm vocal tone, a natural Eastern European accent, and a conversational style inspired by the reference. Do not Americanize the delivery or use an exaggerated announcer voice. Read the approved script exactly, without adding, removing, or rewriting words. The performance should feel warm, welcoming, relaxed, and lightly sophisticated.\n\nBuild the commercial around:\n\n* A gentle lo-fi cafe instrumental music bed, without vocals.\n* A natural bakery door-opening sound.\n* A small doorbell.\n* Coffee pouring.\n* A short oven-timer chime.\n\nOpen with the bakery door sound, followed immediately by the small doorbell. Fade the music in beneath the bell, then begin the narration. Keep the voice clear and prominent throughout.\n\nPlace the coffee-pouring sound beneath \"the coffee is fresh,\" keeping the words fully audible. Let the music build subtly through the offer, with its main beat landing immediately before the closing \"Mila's Bakery.\" Bring it to its warmest point beneath \"Start your day with something worth slowing down for.\"\n\nPlace the oven-timer chime immediately after the final spoken word. Ease the music and chime smoothly to silence by the end, allowing the chime to resolve without an abrupt cutoff.\n\nEdit, mix, and master the advertisement into one polished commercial. Fit the full script naturally into the duration, preserving clear pronunciation and comfortable",
+      "model_name": "gemini-4-argon+gemini-3.8-flash-tts+lyria-3.5",
+      "category": "E-commerce & Advertising",
+      "tags": [
+        "audio",
+        "tts",
+        "lyria",
+        "gemini-native"
+      ],
+      "session_id": "audio-sess_ecom_milas-bakery-30s",
+      "round_index": null,
+      "parent_uniq_id": null,
+      "audio_path": "audio/agent_generated/audio-sess_ecom_milas-bakery-30s_final.m4a",
+      "origin_media_id": null,
+      "origin_media_path": null,
+      "mask_path": null,
+      "reference_images": [],
+      "ext_json": {
+        "source_platform": "Internal Pipeline",
+        "content_safety": "pass",
+        "visual_style": "Gentle lo-fi cafe instrumental music bed, soft and inviting with warm electric piano and subtle percussion. Opens with a natural bakery door chime, includes a subtle coffee pouring sound around 9 seco"
+      }
+    }
+  ]
+}

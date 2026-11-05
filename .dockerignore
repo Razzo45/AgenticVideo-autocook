@@ -1,0 +1,21 @@
+node_modules
+.next
+.git
+.env
+.env.*
+# Docs only — keep anchored so we never strip app/src paths by name.
+*.md
+/agent-transcripts
+.cursor
+/tmp
+/tmp-*
+/tmp-bucket-creds*.json
+/exports
+/data
+/dataset
+/runs
+/tasks
+/agent-tools
+/scripts/smoke*
+.dev*
+tsconfig.tsbuildinfo

@@ -1,0 +1,247 @@
+{
+  "$schema": "./aigc-meta.schema.json",
+  "dataset_name": "agentic_poc",
+  "session_id": "auto-sess_ecom_dreamora-ugc-15s",
+  "records": [
+    {
+      "uniq_id": "aigc_auto-sess_ecom_dreamora-ugc-15s_s0_kf",
+      "modality": "image",
+      "generation_type": "agent_image",
+      "media_id": "auto-sess_ecom_dreamora-ugc-15s_shot0_kf.png",
+      "media_desc": "The creator delivers the relatable bedtime Hook and Problem beats in her cozy bedroom, including a quick B-roll cut of lying awake looking at the ceiling before introducing DREAMORA with her phone in hand.",
+      "media_path": "image/agent_generated/auto-sess_ecom_dreamora-ugc-15s_shot0_kf.png",
+      "format": "png",
+      "width": 1440,
+      "height": 2560,
+      "duration": null,
+      "fps": null,
+      "resolution": null,
+      "prompt": "Vertical 9:16 medium close-up selfie framing of the young woman from creator_casting.mov with long wavy brown-blonde hair wearing white ribbed pajamas printed with small red cherries and three red bows down the front, sitting cross-legged on her bed in a cozy bedroom with a dark wooden beamed ceiling, grey wall on the left, beige wall and grey curtains on the right, under warm soft evening lighting, looking directly at the camera with a relatable slightly sleepy expression.",
+      "model_name": "omni:text_to_video",
+      "category": "E-commerce & Advertising",
+      "tags": [
+        "UGC",
+        "DREAMORA",
+        "sleep app",
+        "bedtime routine",
+        "vertical ad",
+        "direct response",
+        "relaxation"
+      ],
+      "session_id": "auto-sess_ecom_dreamora-ugc-15s",
+      "round_index": null,
+      "parent_uniq_id": null,
+      "audio_path": null,
+      "origin_media_id": null,
+      "origin_media_path": null,
+      "mask_path": null,
+      "reference_images": [
+        "reference/input_images/auto-sess_ecom_dreamora-ugc-15s_op_DREAMORA_app_home_sounds.png",
+        "reference/input_images/auto-sess_ecom_dreamora-ugc-15s_op_DREAMORA_app_now_playing.jpg",
+        "reference/input_images/auto-sess_ecom_dreamora-ugc-15s_op_DREAMORA_app_wind_down.png",
+        "reference/input_images/auto-sess_ecom_dreamora-ugc-15s_op_DREAMORA_brand_guidelines.png",
+        "reference/input_images/auto-sess_ecom_dreamora-ugc-15s_op_DREAMORA_logo.png",
+        "reference/input_images/auto-sess_ecom_dreamora-ugc-15s_op_DREAMORA_logo_old_ref.png"
+      ],
+      "ext_json": {
+        "source_platform": "Internal Pipeline",
+        "code_type": null,
+        "aspect_ratio": "9:16",
+        "content_safety": "pass",
+        "aesthetic_score": 7,
+        "consistency_score": null,
+        "visual_style": "Authentic vertical 9:16 UGC smartphone aesthetic with warm soft evening lighting, natural handheld framing, and DREAMORA brand palette accents (Navy #00071D, Beige #DDC4AF, Cream #FFE3B0, Taupe #886C59, Slate #5E5C69)."
+      }
+    },
+    {
+      "uniq_id": "aigc_auto-sess_ecom_dreamora-ugc-15s_s1_kf",
+      "modality": "image",
+      "generation_type": "agent_image",
+      "media_id": "auto-sess_ecom_dreamora-ugc-15s_shot1_kf.png",
+      "media_desc": "The creator snuggles under the covers as the DREAMORA app interface screenshots showcase sound selection and Wind Down mode, then she delivers the final recommendation and drifts off into peaceful sleep.",
+      "media_path": "image/agent_generated/auto-sess_ecom_dreamora-ugc-15s_shot1_kf.png",
+      "format": "png",
+      "width": 1440,
+      "height": 2560,
+      "duration": null,
+      "fps": null,
+      "resolution": null,
+      "prompt": "Continuation from the previous frame in the same cozy warm-lit bedroom: the same young woman with long wavy brown-blonde hair in white cherry-print ribbed pajamas sits comfortably on the bed holding her smartphone, smiling warmly at the camera.",
+      "model_name": "join:prev_clip_tail",
+      "category": "E-commerce & Advertising",
+      "tags": [
+        "UGC",
+        "DREAMORA",
+        "sleep app",
+        "bedtime routine",
+        "vertical ad",
+        "direct response",
+        "relaxation"
+      ],
+      "session_id": "auto-sess_ecom_dreamora-ugc-15s",
+      "round_index": null,
+      "parent_uniq_id": null,
+      "audio_path": null,
+      "origin_media_id": null,
+      "origin_media_path": null,
+      "mask_path": null,
+      "reference_images": [
+        "reference/input_images/auto-sess_ecom_dreamora-ugc-15s_shot0_kf.png"
+      ],
+      "ext_json": {
+        "source_platform": "Internal Pipeline",
+        "code_type": null,
+        "aspect_ratio": "9:16",
+        "content_safety": "pass",
+        "aesthetic_score": 7,
+        "consistency_score": null,
+        "visual_style": "Authentic vertical 9:16 UGC smartphone aesthetic with warm soft evening lighting, natural handheld framing, and DREAMORA brand palette accents (Navy #00071D, Beige #DDC4AF, Cream #FFE3B0, Taupe #886C59, Slate #5E5C69)."
+      }
+    },
+    {
+      "uniq_id": "aigc_auto-sess_ecom_dreamora-ugc-15s_s0",
+      "modality": "video",
+      "generation_type": "agent_video",
+      "media_id": "auto-sess_ecom_dreamora-ugc-15s_shot0.mp4",
+      "media_desc": "The creator delivers the relatable bedtime Hook and Problem beats in her cozy bedroom, including a quick B-roll cut of lying awake looking at the ceiling before introducing DREAMORA with her phone in hand.",
+      "media_path": "video/agent_generated/auto-sess_ecom_dreamora-ugc-15s_shot0.mp4",
+      "format": "mp4",
+      "width": 1080,
+      "height": 1920,
+      "duration": 8,
+      "fps": 24,
+      "resolution": [
+        1080,
+        1920
+      ],
+      "prompt": "Using the 0.0s to 8.0s segment of creator_casting.mov as the base plate, keep the creator's exact appearance, cherry-print pajamas, bedroom background, and natural conversational speaking delivery. From 0.0s to 3.5s (Hook), she speaks directly to the camera with a relatable sleepy expression and gentle hand wave, delivering the line: \"If your brain suddenly becomes wide awake the second you get into bed... same.\" From 3.5s to 6.5s (Problem), intercut a quick natural B-roll beat of the same creator lying back on the pillows in the same bed, tossing slightly and looking up at the wooden beamed ceiling in frustration, then return to her speaking on camera as she says: \"I used to lay here forever trying to fall asleep.\" From 6.5s to 8.0s (start of Solution), she holds a smartphone comfortably in her hand on the bed and begins saying: \"Then I started using DREAMORA.\" Keep natural speech motion and clear conversational American English voice over very subtle low ambient background audio, with no burned-in text or logos generated by the video model.",
+      "model_name": "google/gemini-omni-1.1-flash",
+      "category": "E-commerce & Advertising",
+      "tags": [
+        "UGC",
+        "DREAMORA",
+        "sleep app",
+        "bedtime routine",
+        "vertical ad",
+        "direct response",
+        "relaxation"
+      ],
+      "session_id": "auto-sess_ecom_dreamora-ugc-15s",
+      "round_index": 0,
+      "parent_uniq_id": null,
+      "audio_path": "audio/generated/auto-sess_ecom_dreamora-ugc-15s_shot0.m4a",
+      "origin_media_id": null,
+      "origin_media_path": null,
+      "mask_path": null,
+      "reference_images": [
+        "reference/input_images/auto-sess_ecom_dreamora-ugc-15s_shot0_kf.png"
+      ],
+      "ext_json": {
+        "source_platform": "Internal Pipeline",
+        "code_type": "H.264",
+        "aspect_ratio": "9:16",
+        "content_safety": "pass",
+        "aesthetic_score": 7,
+        "consistency_score": 80,
+        "visual_style": "Authentic vertical 9:16 UGC smartphone aesthetic with warm soft evening lighting, natural handheld framing, and DREAMORA brand palette accents (Navy #00071D, Beige #DDC4AF, Cream #FFE3B0, Taupe #886C59, Slate #5E5C69)."
+      }
+    },
+    {
+      "uniq_id": "aigc_auto-sess_ecom_dreamora-ugc-15s_s1",
+      "modality": "video",
+      "generation_type": "agent_video",
+      "media_id": "auto-sess_ecom_dreamora-ugc-15s_shot1.mp4",
+      "media_desc": "The creator snuggles under the covers as the DREAMORA app interface screenshots showcase sound selection and Wind Down mode, then she delivers the final recommendation and drifts off into peaceful sleep.",
+      "media_path": "video/agent_generated/auto-sess_ecom_dreamora-ugc-15s_shot1.mp4",
+      "format": "mp4",
+      "width": 1080,
+      "height": 1920,
+      "duration": 8,
+      "fps": 24,
+      "resolution": [
+        1080,
+        1920
+      ],
+      "prompt": "Continuing seamlessly using the 8.0s to 15.13s segment of creator_casting.mov as the base plate, pick up right as the creator finishes holding her phone in bed. From 0.0s to 4.0s of this clip (Solution), cut to a quick cozy shot of the creator snuggling comfortably under the bed covers for a night's rest while brief clean floating card visuals of the attached DREAMORA app screenshots appear one by one in sequence—first the Choose your sound home screen (DREAMORA_app_home_sounds.png), then the Rain player screen (DREAMORA_app_now_playing.jpg), and then the 20:00 Wind Down mode screen (DREAMORA_app_wind_down.png)—as her voice-over continues: \"I pick a sound I like, and its Wind Down mode gradually quiets everything down.\" From 4.0s to 8.0s (CTA), return to the creator on camera cozy in bed with a relaxed, genuine smile as she says: \"If you struggle to switch off at night, try DREAMORA tonight,\" and finish on a calm shot of her eyes closed, peacefully sleeping under the blanket in soft warm evening light.",
+      "model_name": "google/gemini-omni-1.1-flash",
+      "category": "E-commerce & Advertising",
+      "tags": [
+        "UGC",
+        "DREAMORA",
+        "sleep app",
+        "bedtime routine",
+        "vertical ad",
+        "direct response",
+        "relaxation"
+      ],
+      "session_id": "auto-sess_ecom_dreamora-ugc-15s",
+      "round_index": 0,
+      "parent_uniq_id": null,
+      "audio_path": "audio/generated/auto-sess_ecom_dreamora-ugc-15s_shot1.m4a",
+      "origin_media_id": null,
+      "origin_media_path": null,
+      "mask_path": null,
+      "reference_images": [
+        "reference/input_images/auto-sess_ecom_dreamora-ugc-15s_shot1_kf.png"
+      ],
+      "ext_json": {
+        "source_platform": "Internal Pipeline",
+        "code_type": "H.264",
+        "aspect_ratio": "9:16",
+        "content_safety": "pass",
+        "aesthetic_score": 7,
+        "consistency_score": 80,
+        "visual_style": "Authentic vertical 9:16 UGC smartphone aesthetic with warm soft evening lighting, natural handheld framing, and DREAMORA brand palette accents (Navy #00071D, Beige #DDC4AF, Cream #FFE3B0, Taupe #886C59, Slate #5E5C69)."
+      }
+    },
+    {
+      "uniq_id": "aigc_auto-sess_ecom_dreamora-ugc-15s_final",
+      "modality": "video",
+      "generation_type": "edit_video",
+      "media_id": "auto-sess_ecom_dreamora-ugc-15s_final.mp4",
+      "media_desc": "A 16-second vertical UGC performance ad for the DREAMORA bedtime sound and relaxation app, following a young woman in cherry-print pajamas through the Hook, Problem, Solution, and CTA structure in a cozy warm-lit bedroom.",
+      "media_path": "video/edited/auto-sess_ecom_dreamora-ugc-15s_final.mp4",
+      "format": "mp4",
+      "width": 1080,
+      "height": 1920,
+      "duration": 15.833333,
+      "fps": 30,
+      "resolution": [
+        1080,
+        1920
+      ],
+      "prompt": "Concatenate the approved storyboard clips into one continuous session cut.",
+      "model_name": "ffmpeg",
+      "category": "E-commerce & Advertising",
+      "tags": [
+        "UGC",
+        "DREAMORA",
+        "sleep app",
+        "bedtime routine",
+        "vertical ad",
+        "direct response",
+        "relaxation"
+      ],
+      "session_id": "auto-sess_ecom_dreamora-ugc-15s",
+      "round_index": 1,
+      "parent_uniq_id": "aigc_auto-sess_ecom_dreamora-ugc-15s_s0",
+      "audio_path": "audio/generated/auto-sess_ecom_dreamora-ugc-15s_final.m4a",
+      "origin_media_id": "auto-sess_ecom_dreamora-ugc-15s_shot0.mp4",
+      "origin_media_path": "video/agent_generated/auto-sess_ecom_dreamora-ugc-15s_shot0.mp4",
+      "mask_path": null,
+      "reference_images": [],
+      "ext_json": {
+        "source_platform": "Internal Pipeline",
+        "code_type": "H.264",
+        "aspect_ratio": "9:16",
+        "content_safety": "pass",
+        "aesthetic_score": 7,
+        "consistency_score": 80,
+        "visual_style": "Authentic vertical 9:16 UGC smartphone aesthetic with warm soft evening lighting, natural handheld framing, and DREAMORA brand palette accents (Navy #00071D, Beige #DDC4AF, Cream #FFE3B0, Taupe #886C59, Slate #5E5C69).",
+        "origin_instruction": "Session stitch of approved agent_video shots",
+        "human_instruction": "Approve stitched session",
+        "score": 80
+      }
+    }
+  ]
+}

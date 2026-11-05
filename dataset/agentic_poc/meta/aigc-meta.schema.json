@@ -1,0 +1,249 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agenticvideo.local/aigc-meta.schema.json",
+  "title": "AIGC multimodal delivery (meta.json equivalent)",
+  "description": "Pretty-printed JSON form of AIGC Delivery Format v1.0 §3.1 (25 top-level fields). JSONL delivery is the same objects, one per line.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "dataset_name", "session_id", "records"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "dataset_name": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/MetaRecord" }
+    }
+  },
+  "definitions": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_./-]+$",
+      "not": { "pattern": "\\\\" }
+    },
+    "referencePath": {
+      "type": "string",
+      "pattern": "^reference/(input_images|masks)/[A-Za-z0-9_./-]+$"
+    },
+    "ExtJson": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code_type",
+        "aspect_ratio",
+        "content_safety",
+        "source_platform",
+        "aesthetic_score",
+        "consistency_score"
+      ],
+      "properties": {
+        "code_type": { "type": ["string", "null"], "enum": ["H.264", "H.265", null] },
+        "aspect_ratio": { "type": ["string", "null"] },
+        "content_safety": { "type": ["string", "null"], "enum": ["pass", "flagged", null] },
+        "source_platform": { "type": ["string", "null"] },
+        "aesthetic_score": { "type": ["number", "null"], "minimum": 0, "maximum": 10 },
+        "consistency_score": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "narrative_quality": { "type": ["string", "null"], "enum": ["low", "medium", "high", null] },
+        "visual_style": { "type": ["string", "null"] },
+        "origin_instruction": { "type": "string" },
+        "human_instruction": { "type": "string" },
+        "score": { "type": "number" },
+        "inpainting_mode": { "type": "string" },
+        "preserved_pixel_ratio": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "MetaRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uniq_id",
+        "modality",
+        "generation_type",
+        "media_id",
+        "media_desc",
+        "media_path",
+        "format",
+        "width",
+        "height",
+        "duration",
+        "fps",
+        "resolution",
+        "prompt",
+        "model_name",
+        "category",
+        "tags",
+        "session_id",
+        "round_index",
+        "parent_uniq_id",
+        "audio_path",
+        "origin_media_id",
+        "origin_media_path",
+        "mask_path",
+        "reference_images",
+        "ext_json"
+      ],
+      "properties": {
+        "uniq_id": { "type": "string", "minLength": 1 },
+        "modality": { "type": "string", "enum": ["image", "video"] },
+        "generation_type": {
+          "type": "string",
+          "enum": [
+            "agent_image",
+            "agent_video",
+            "user_image",
+            "user_video",
+            "edit_image",
+            "edit_video",
+            "local_edit"
+          ]
+        },
+        "media_id": { "type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$" },
+        "media_desc": { "type": "string" },
+        "media_path": { "$ref": "#/definitions/relativePath" },
+        "format": { "type": "string", "enum": ["png", "jpg", "jpeg", "webp", "tif", "tiff", "heif", "heic", "mp4", "mov"] },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "duration": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "fps": { "type": ["integer", "null"], "minimum": 1 },
+        "resolution": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "type": "integer", "minimum": 1 }
+            }
+          ]
+        },
+        "prompt": { "type": "string", "minLength": 1 },
+        "model_name": { "type": "string", "minLength": 1 },
+        "category": { "type": "string", "minLength": 1 },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "session_id": { "type": ["string", "null"] },
+        "round_index": { "type": ["integer", "null"], "minimum": 0 },
+        "parent_uniq_id": { "type": ["string", "null"] },
+        "audio_path": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/relativePath" }] },
+        "origin_media_id": { "type": ["string", "null"] },
+        "origin_media_path": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/relativePath" }] },
+        "mask_path": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/referencePath" }] },
+        "reference_images": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/referencePath" }
+        },
+        "ext_json": { "$ref": "#/definitions/ExtJson" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "modality": { "const": "image" } }, "required": ["modality"] },
+          "then": {
+            "properties": {
+              "duration": { "type": "null" },
+              "fps": { "type": "null" },
+              "resolution": { "type": "null" },
+              "audio_path": { "type": "null" },
+              "format": { "enum": ["png", "jpg", "jpeg", "webp", "tif", "tiff", "heif", "heic"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "modality": { "const": "video" } }, "required": ["modality"] },
+          "then": {
+            "properties": {
+              "duration": { "type": "number", "exclusiveMinimum": 0 },
+              "fps": { "type": "integer", "minimum": 1 },
+              "resolution": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": { "type": "integer", "minimum": 1 }
+              },
+              "format": { "enum": ["mp4", "mov"] }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "generation_type": { "enum": ["agent_image", "agent_video", "user_image", "user_video"] }
+            },
+            "required": ["generation_type"]
+          },
+          "then": {
+            "properties": {
+              "origin_media_id": { "type": "null" },
+              "origin_media_path": { "type": "null" },
+              "mask_path": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "generation_type": { "const": "agent_image" } },
+            "required": ["generation_type"]
+          },
+          "then": {
+            "properties": {
+              "modality": { "const": "image" },
+              "media_path": { "pattern": "^image/agent_generated/" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "generation_type": { "const": "agent_video" } },
+            "required": ["generation_type"]
+          },
+          "then": {
+            "properties": {
+              "modality": { "const": "video" },
+              "media_path": { "pattern": "^video/agent_generated/" },
+              "session_id": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "generation_type": { "const": "edit_video" } },
+            "required": ["generation_type"]
+          },
+          "then": {
+            "properties": {
+              "modality": { "const": "video" },
+              "media_path": { "pattern": "^video/edited/" },
+              "session_id": { "type": "string", "minLength": 1 },
+              "round_index": { "type": "integer", "minimum": 0 },
+              "origin_media_id": { "type": "string", "minLength": 1 },
+              "origin_media_path": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "generation_type": { "const": "local_edit" } },
+            "required": ["generation_type"]
+          },
+          "then": {
+            "properties": {
+              "mask_path": { "$ref": "#/definitions/referencePath" },
+              "origin_media_path": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "properties": { "generation_type": { "const": "local_edit" } },
+              "required": ["generation_type"]
+            }
+          },
+          "then": {
+            "properties": { "mask_path": { "type": "null" } }
+          }
+        }
+      ]
+    }
+  }
+}

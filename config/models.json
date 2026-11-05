@@ -1,0 +1,18 @@
+{
+  "script": "gemini-4-argon",
+  "keyframe": "omni:text_to_video",
+  "video": "google/gemini-omni-1.1-flash",
+  "edit": "google/gemini-omni-1.1-flash",
+  "reviewer": null,
+  "variantCount": 1,
+  "defaultDurationSec": 30,
+  "defaultAspect": "16:9",
+  "maxParallelRuns": 2,
+  "videoByAspect": {
+    "16:9": "google/gemini-omni-1.1-flash",
+    "9:16": "google/gemini-omni-1.1-flash",
+    "1:1": "google/gemini-omni-1.1-flash",
+    "2.35:1": "google/gemini-omni-1.1-flash"
+  },
+  "comment": "Product autocook: maxParallelRuns=2 (GDP). Heavy AV cooks HEAVY_RUNNING_MAX=1. Gemini AIMD admission (ceiling 2) gates Omni/image/Argon to avoid 429 storms."
+}

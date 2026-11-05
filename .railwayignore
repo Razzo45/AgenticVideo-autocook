@@ -1,0 +1,21 @@
+# Local artifacts — never upload to Railway (Docker builds deps in-image)
+# Anchor with / so we do NOT exclude app/api/runs, app/runs, app/api/dataset, etc.
+node_modules
+.next
+.git
+.env
+.env.*
+*.log
+/tmp
+/tmp-*
+/tmp-bucket-creds*.json
+/runs
+/data
+/dataset
+/tasks
+/exports
+/agent-tools
+/tmp-rubric-frames
+tsconfig.tsbuildinfo
+dev.bat
+/agent-transcripts
