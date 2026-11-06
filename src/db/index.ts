@@ -114,6 +114,13 @@ export function getDb(): DatabaseSync {
       PRIMARY KEY (request_id, user_id),
       FOREIGN KEY (run_id) REFERENCES runs(id)
     );
+    CREATE TABLE IF NOT EXISTS cook_tasks (
+      request_id TEXT NOT NULL,
+      user_id TEXT NOT NULL DEFAULT '',
+      cooks_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (request_id, user_id)
+    );
   `);
   migrateRuns(db);
   migrateJobs(db);
@@ -356,6 +363,44 @@ export async function rememberCookRequest(
       `INSERT OR IGNORE INTO cook_requests (request_id, user_id, run_id, created_at) VALUES (?,?,?,?)`,
     )
     .run(id, userId, runId, nowIso());
+}
+
+export type CookTaskItem = {
+  kind: string;
+  label: string;
+  brief: string;
+  runId: string;
+  requestId: string;
+};
+
+/** Fan-out manifest for one operator task. Null when this request was a single cook. */
+export async function findCookTask(
+  requestId: string,
+  userId: string,
+): Promise<CookTaskItem[] | undefined> {
+  if (usePg()) return pg.pgFindCookTask(requestId, userId);
+  const id = requestId.trim();
+  if (!id || !userId) return undefined;
+  const row = getDb()
+    .prepare("SELECT cooks_json FROM cook_tasks WHERE request_id = ? AND user_id = ? LIMIT 1")
+    .get(id, userId) as { cooks_json: string } | undefined;
+  if (!row) return undefined;
+  return JSON.parse(row.cooks_json) as CookTaskItem[];
+}
+
+export async function rememberCookTask(
+  requestId: string,
+  userId: string,
+  cooks: CookTaskItem[],
+): Promise<void> {
+  if (usePg()) return pg.pgRememberCookTask(requestId, userId, cooks);
+  const id = requestId.trim();
+  if (!id || !userId) return;
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO cook_tasks (request_id, user_id, cooks_json, created_at) VALUES (?,?,?,?)`,
+    )
+    .run(id, userId, JSON.stringify(cooks), nowIso());
 }
 
 export async function enqueueJob(runId: string, type: string, payload: unknown = {}): Promise<string> {

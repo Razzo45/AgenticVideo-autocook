@@ -169,6 +169,40 @@ export async function pgFindRunByRequestId(requestId: string, userId: string): P
   return rows[0] ? pgGetRun(rows[0].run_id) : undefined;
 }
 
+export async function pgFindCookTask(
+  requestId: string,
+  userId: string,
+): Promise<Array<{ kind: string; label: string; brief: string; runId: string; requestId: string }> | undefined> {
+  const id = requestId.trim();
+  if (!id || !userId) return undefined;
+  const rows = await pgQuery<{ cooks_json: string }>(
+    `SELECT cooks_json FROM app.cook_tasks WHERE request_id = $1 AND user_id = $2 LIMIT 1`,
+    [id, userId],
+  );
+  if (!rows[0]) return undefined;
+  return JSON.parse(rows[0].cooks_json) as Array<{
+    kind: string;
+    label: string;
+    brief: string;
+    runId: string;
+    requestId: string;
+  }>;
+}
+
+export async function pgRememberCookTask(
+  requestId: string,
+  userId: string,
+  cooks: Array<{ kind: string; label: string; brief: string; runId: string; requestId: string }>,
+): Promise<void> {
+  const id = requestId.trim();
+  if (!id || !userId) return;
+  await pgQuery(
+    `INSERT INTO app.cook_tasks (request_id, user_id, cooks_json) VALUES ($1,$2,$3)
+     ON CONFLICT (request_id, user_id) DO NOTHING`,
+    [id, userId, JSON.stringify(cooks)],
+  );
+}
+
 export async function pgRememberCookRequest(requestId: string, runId: string, userId: string): Promise<void> {
   const id = requestId.trim();
   if (!id || !userId) return;

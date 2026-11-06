@@ -63,6 +63,10 @@ export default function CookHomePage() {
         if (json.preflight?.rewrittenBrief) setPrompt(json.preflight.rewrittenBrief);
         return;
       }
+      if (json.fanout && json.taskId) {
+        router.push(`/task/${encodeURIComponent(json.taskId)}`);
+        return;
+      }
       const id = json.run?.id as string;
       if (!id) throw new Error("Cook started but no run id returned");
       router.push(`/runs/${id}`);
@@ -83,8 +87,7 @@ export default function CookHomePage() {
         <p className="cook-eyebrow">Autocook</p>
         <h2>Paste the task. Click COOK. Walk away.</h2>
         <p className="sub">
-          Argon checks the brief, Omni generates every scene, stitch delivers the master. Soft safety fixes apply
-          automatically — you only stop for hard blockers.
+          Argon reads the task and starts one cook per deliverable. Each finished file downloads on its own.
         </p>
       </header>
 
