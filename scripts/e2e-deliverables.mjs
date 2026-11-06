@@ -1,5 +1,6 @@
 /**
- * Sequential E2E for every cook deliverable: enqueue → wait → download via /api/media.
+ * Sequential E2E. Each case is one task. The API does not take a deliverable kind.
+ * `job.kind` below is only the local label for the log file.
  *
  *   node scripts/e2e-deliverables.mjs
  *   KINDS=image,pptx node scripts/e2e-deliverables.mjs
@@ -86,9 +87,8 @@ async function cook(job) {
   const res = await fetch(`${BASE}/api/cook`, {
     method: "POST",
     headers: { ...authHeaders(), "content-type": "application/json" },
-    body: JSON.stringify({
+      body: JSON.stringify({
       prompt: job.prompt,
-      kind: job.kind,
       requestId: job.requestId,
       category: "E-commerce & Advertising",
       sessionLabel: `e2e-${job.kind}`,

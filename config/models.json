@@ -14,5 +14,5 @@
     "1:1": "google/gemini-omni-1.1-flash",
     "2.35:1": "google/gemini-omni-1.1-flash"
   },
-  "comment": "Product autocook: maxParallelRuns=2 (GDP). Heavy AV cooks HEAVY_RUNNING_MAX=1. Gemini AIMD admission (ceiling 2) gates Omni/image/Argon to avoid 429 storms."
+  "comment": "One deliverable task runs at a time, ordered by Argon's plan weight. A second slot can read the next task (text plan) while that generation runs."
 }

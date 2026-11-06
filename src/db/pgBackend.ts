@@ -5,11 +5,9 @@ import { pgQuery, getPgPool, postgresConfigured } from "../pipeline/pg";
 import type { Gate, OutputResolution, PipelineMode, RunStatus } from "../pipeline/constants";
 import {
   classifyCookJob,
-  HEAVY_RUNNING_MAX,
-  HELPER_RUNNING_MAX,
   LANE_DEFAULT,
-  LANE_HELPER,
 } from "../pipeline/jobLanes";
+import { scheduleForJob } from "../pipeline/taskWeight";
 import type { AssetRow, JobRow, ReviewRow, RunRow, VariantRow } from "./types";
 
 export { postgresConfigured };
@@ -58,6 +56,7 @@ function mapJob(r: Record<string, unknown>): JobRow {
     type: String(r.type),
     status: r.status as JobRow["status"],
     weight: Number(r.weight ?? LANE_DEFAULT),
+    task_weight: Number(r.task_weight ?? 10),
     heavy: Number(r.heavy ?? 0),
     archive: Number(r.archive ?? 0),
     payload_json: String(r.payload_json ?? "{}"),
@@ -217,6 +216,7 @@ export async function pgEnqueueJob(runId: string, type: string, payload: unknown
   const id = crypto.randomUUID();
   const run = await pgGetRun(runId);
   const cls = classifyCookJob(run?.pipeline_mode, type);
+  const schedule = scheduleForJob(runId, run?.pipeline_mode, type);
   const base =
     payload && typeof payload === "object" && !Array.isArray(payload)
       ? (payload as Record<string, unknown>)
@@ -226,11 +226,13 @@ export async function pgEnqueueJob(runId: string, type: string, payload: unknown
     ...(cls.heavy ? { heavy: true } : {}),
     ...(cls.archive ? { archive: true } : {}),
     lane: cls.lane,
+    taskWeight: schedule.weight,
+    taskParts: schedule.parts,
   });
   await pgQuery(
-    `INSERT INTO app.jobs (id, run_id, type, status, weight, heavy, archive, payload_json)
-     VALUES ($1,$2,$3,'pending',$4,$5,$6,$7)`,
-    [id, runId, type, cls.lane, cls.heavy ? 1 : 0, cls.archive ? 1 : 0, payloadJson],
+    `INSERT INTO app.jobs (id, run_id, type, status, weight, task_weight, heavy, archive, payload_json)
+     VALUES ($1,$2,$3,'pending',$4,$5,$6,$7,$8)`,
+    [id, runId, type, cls.lane, schedule.weight, cls.heavy ? 1 : 0, cls.archive ? 1 : 0, payloadJson],
   );
   return id;
 }
@@ -256,25 +258,25 @@ export async function pgClaimNextJob(): Promise<JobRow | undefined> {
            SELECT 1 FROM app.jobs r WHERE r.run_id = j.run_id AND r.status = 'running'
          )
          AND (
-           (COALESCE(j.heavy, 0) = 0 AND COALESCE(j.archive, 0) = 0)
-           OR (
-             SELECT COUNT(*) FROM app.jobs rh
-             WHERE rh.status = 'running'
-               AND (COALESCE(rh.heavy, 0) = 1 OR COALESCE(rh.archive, 0) = 1)
-           ) < $1
+           j.type = 'argon_plan'
+           OR NOT EXISTS (
+             SELECT 1 FROM app.jobs busy
+             WHERE busy.status = 'running' AND busy.type <> 'argon_plan'
+           )
          )
-         AND (
-           COALESCE(j.weight, ${LANE_DEFAULT}) <> ${LANE_HELPER}
-           OR (
-             SELECT COUNT(*) FROM app.jobs rh
-             WHERE rh.status = 'running'
-               AND COALESCE(rh.weight, ${LANE_DEFAULT}) = ${LANE_HELPER}
-           ) < $2
-         )
-       ORDER BY COALESCE(j.weight, ${LANE_DEFAULT}) ASC, j.created_at ASC
+       ORDER BY
+         CASE
+           WHEN j.type <> 'argon_plan' AND EXISTS (
+             SELECT 1 FROM app.jobs prev
+             WHERE prev.run_id = j.run_id AND prev.status = 'done' AND prev.type <> 'argon_plan'
+           ) THEN 0
+           WHEN j.type <> 'argon_plan' THEN 1
+           ELSE 2
+         END,
+         CASE WHEN j.type = 'argon_plan' THEN 0 ELSE COALESCE(j.task_weight, 10) END ASC,
+         j.created_at ASC
        LIMIT 1
        FOR UPDATE SKIP LOCKED`,
-      [HEAVY_RUNNING_MAX, HELPER_RUNNING_MAX],
     );
     const job = sel.rows[0] as Record<string, unknown> | undefined;
     if (!job) {

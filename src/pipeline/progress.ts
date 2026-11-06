@@ -84,6 +84,9 @@ export function liveStatus(run: RunLite): LiveStatus {
         text: `Document cook (${mode}) — waiting in FIFO / generating…`,
       };
     }
+    if (mode === "task") {
+      return { kind: "work", text: ticker || "Argon is making the deliverables…" };
+    }
     if (!run.script_json) {
       const direct = mode === "direct";
       return {

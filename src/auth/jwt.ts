@@ -28,6 +28,7 @@ export type LaunchClaims = {
   iat: number;
   exp: number;
   tenant_id?: string;
+  /** Ignored. Older launch tokens may still carry kind "launch". It is not a deliverable. */
   kind?: string;
 };
 
@@ -81,7 +82,6 @@ export function mintLaunchToken(opts: {
       iat: now,
       exp: now + ttl,
       ...(opts.tenantId ? { tenant_id: opts.tenantId } : {}),
-      kind: "launch",
     },
     jwtSecret(),
   );

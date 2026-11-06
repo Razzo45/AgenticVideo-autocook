@@ -129,7 +129,7 @@ import {
   parseAudioPlan,
 } from "./audioPipeline";
 import { isDocRun, jobDocCook, resolveDocFinalPath } from "./docPipeline";
-import { jobArgonTask, loadTaskDeliverables } from "./argonTask";
+import { jobArgonPlan, jobArgonTask, loadTaskDeliverables } from "./argonTask";
 import { withGeminiOwner } from "./geminiAdmission";
 import {
   appendMetaJsonl,
@@ -405,11 +405,16 @@ export async function createRun(input: {
     tenant_id: tenantId,
     created_by_kind: createdByKind,
   });
-  // FIFO: document cooks share the same job table as video/audio (oldest pending first).
-  if (mode === "task") await enqueueJob(id, "argon_task");
-  else if (isDocPipelineMode(mode)) await enqueueJob(id, "doc_cook");
-  else await enqueueJob(id, mode === "audio" ? "audio_plan" : "script");
-  await updateRun(id, { status: "generating" });
+  if (mode === "task") {
+    await enqueueJob(id, "argon_plan");
+    await updateRun(id, { status: "queued", error: "Argon is reading the task…" });
+  } else if (isDocPipelineMode(mode)) {
+    await enqueueJob(id, "doc_cook");
+    await updateRun(id, { status: "generating" });
+  } else {
+    await enqueueJob(id, mode === "audio" ? "audio_plan" : "script");
+    await updateRun(id, { status: "generating" });
+  }
   if (input.requestId?.trim()) await rememberCookRequest(input.requestId, id, userId);
   return (await getRun(id))!;
 }
@@ -552,7 +557,8 @@ export async function processJob(job: JobRow): Promise<void> {
   try {
     // GDP-style owner fairness: all Gemini calls in this job share run id.
     await withGeminiOwner(run.id, async () => {
-      if (job.type === "argon_task") await jobArgonTask(run);
+      if (job.type === "argon_plan") await jobArgonPlan(run);
+      else if (job.type === "argon_task" || job.type === "argon_execute") await jobArgonTask(run);
       else if (job.type === "doc_cook") await jobDocCook(run);
       else if (job.type === "audio_plan") await jobAudioPlan(run);
       else if (job.type === "audio_speech") await jobAudioSpeech(run);

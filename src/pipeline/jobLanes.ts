@@ -1,18 +1,13 @@
 /**
- * Cook-queue lanes — ported from GDP `src/domain/jobs.ts` + `src/lib/jobs/queue.ts`.
+ * Lane numbers are still stored on the job for logs.
+ * Admission order lives in claimNextJob: one task at a time, then the lowest task_weight.
  *
- * GDP (stress-tested ~20 users):
- *  - claim order: fast lane → default → generate → helper → archive, then created_at
- *  - light jobs always eligible; heavy/archive only if running heavy < HEAVY_RUNNING_MAX
- *  - helper kind capped at HELPER_RUNNING_MAX
- *
- * Autocook mapping:
+ * Lane map kept from the GDP port:
  *  - fast (0): image
- *  - default (1): html, pdf, video stages
+ *  - default (1): html, pdf, video stages, argon task
  *  - generate (2): pptx
- *  - helper (3): audio (TTS/Lyria chain)
+ *  - helper (3): audio
  *  - archive (4): reserved
- *  - heavy: video + audio (Gemini/Omni long haul), like GDP video/audio media
  */
 
 import { isDocPipelineMode } from "./constants";
@@ -72,7 +67,10 @@ export function classifyCookJob(
   if (pipelineMode === "html" || pipelineMode === "pdf" || isDocPipelineMode(pipelineMode ?? "")) {
     return { lane: LANE_DEFAULT, heavy: false, archive: false };
   }
-  if (pipelineMode === "task" || jobType === "argon_task") {
+  if (jobType === "argon_plan") {
+    return { lane: LANE_FAST, heavy: false, archive: false };
+  }
+  if (pipelineMode === "task" || jobType === "argon_task" || jobType === "argon_execute") {
     return { lane: LANE_DEFAULT, heavy: true, archive: false };
   }
   if (isVideoMode(pipelineMode) || ["script", "keyframes", "clips", "stitch", "export"].includes(jobType)) {

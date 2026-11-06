@@ -62,7 +62,6 @@ const payload = b64url(
     iat: now,
     exp: now + ttlSec,
     ...(tenantId ? { tenant_id: tenantId } : {}),
-    kind: "launch",
   }),
 );
 const data = `${header}.${payload}`;

@@ -166,7 +166,7 @@ async function loop() {
       }
       if (!job) break;
       console.log(
-        `[worker] ${job.type} run=${job.run_id} id=${job.id} lane=${job.weight ?? "?"} heavy=${job.heavy ? 1 : 0} slots=${inFlight.size + 1}/${max}`,
+        `[worker] ${job.type} run=${job.run_id} id=${job.id} taskWeight=${job.task_weight ?? "?"} slots=${inFlight.size + 1}/${max}`,
       );
       let work!: Promise<void>;
       work = (async () => {
