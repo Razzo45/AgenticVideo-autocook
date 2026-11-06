@@ -15,6 +15,8 @@ import { updateRun, upsertAsset, type RunRow } from "../db";
 
 const SYSTEM = `You are Argon. The operator message and the attached files are the whole job.
 Produce each deliverable by calling tools. Tool prompts and reference filenames are sent on unchanged.
+generate_image does not apply pixel width or height. When the job names a size, call fit_image on that file.
+generate_video only returns a 3–10 second clip at 16:9 or 9:16. Call fit_video to change frame size, trim, or loop, and join_videos to put clips in order.
 Stop when those files exist.`;
 
 export type TaskDeliverable = { id: string; label: string; path: string };
@@ -70,7 +72,7 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
     user: run.initial_prompt,
     userParts,
     tools: ARGON_MEDIA_TOOL_DECLARATIONS,
-    maxRounds: 16,
+    maxRounds: 24,
     onStatus: async (msg) => {
       await updateRun(run.id, { error: msg, status: "generating" });
     },
