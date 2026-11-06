@@ -129,6 +129,7 @@ import {
   parseAudioPlan,
 } from "./audioPipeline";
 import { isDocRun, jobDocCook, resolveDocFinalPath } from "./docPipeline";
+import { jobArgonTask, loadTaskDeliverables } from "./argonTask";
 import { withGeminiOwner } from "./geminiAdmission";
 import {
   appendMetaJsonl,
@@ -381,9 +382,9 @@ export async function createRun(input: {
     session_id: session,
     status: "queued",
     category: input.category,
-    aspect_ratio: mode === "audio" || isDocPipelineMode(mode) ? "16:9" : input.aspect,
+    aspect_ratio: mode === "audio" || mode === "task" || isDocPipelineMode(mode) ? "16:9" : input.aspect,
     target_duration: duration,
-    output_resolution: mode === "audio" || isDocPipelineMode(mode) ? "1080p" : outputResolution,
+    output_resolution: mode === "audio" || mode === "task" || isDocPipelineMode(mode) ? "1080p" : outputResolution,
     initial_prompt: input.prompt,
     script_model: scriptModel,
     keyframe_model: "omni:text_to_video",
@@ -405,7 +406,8 @@ export async function createRun(input: {
     created_by_kind: createdByKind,
   });
   // FIFO: document cooks share the same job table as video/audio (oldest pending first).
-  if (isDocPipelineMode(mode)) await enqueueJob(id, "doc_cook");
+  if (mode === "task") await enqueueJob(id, "argon_task");
+  else if (isDocPipelineMode(mode)) await enqueueJob(id, "doc_cook");
   else await enqueueJob(id, mode === "audio" ? "audio_plan" : "script");
   await updateRun(id, { status: "generating" });
   if (input.requestId?.trim()) await rememberCookRequest(input.requestId, id, userId);
@@ -550,7 +552,8 @@ export async function processJob(job: JobRow): Promise<void> {
   try {
     // GDP-style owner fairness: all Gemini calls in this job share run id.
     await withGeminiOwner(run.id, async () => {
-      if (job.type === "doc_cook") await jobDocCook(run);
+      if (job.type === "argon_task") await jobArgonTask(run);
+      else if (job.type === "doc_cook") await jobDocCook(run);
       else if (job.type === "audio_plan") await jobAudioPlan(run);
       else if (job.type === "audio_speech") await jobAudioSpeech(run);
       else if (job.type === "audio_music") await jobAudioMusic(run);
@@ -2652,6 +2655,8 @@ export async function runDetail(runId: string) {
   }
   const audio = isAudioRun(run);
   const doc = isDocRun(run);
+  const task = run.pipeline_mode === "task";
+  const taskDeliverables = task ? await loadTaskDeliverables(runId) : [];
   const script =
     !audio && !doc && run.script_json ? scriptPlanSchema.parse(JSON.parse(run.script_json)) : null;
   const audioPlan = audio && run.script_json ? parseAudioPlan(run) : null;
@@ -2682,9 +2687,11 @@ export async function runDetail(runId: string) {
         : null
     : doc
       ? await resolveDocFinalPath(runId)
-      : fs.existsSync(finalMp4)
-        ? finalMp4
-        : null;
+      : task
+        ? (taskDeliverables[0]?.path ?? null)
+        : fs.existsSync(finalMp4)
+          ? finalMp4
+          : null;
   const audioDeliverables = audio
     ? (
         [
@@ -2706,6 +2713,7 @@ export async function runDetail(runId: string) {
     stitch,
     finalPath,
     audioDeliverables,
-    sceneProgress: audio || doc ? null : sceneProgressForRun(run),
+    deliverables: taskDeliverables,
+    sceneProgress: audio || doc || task ? null : sceneProgressForRun(run),
   };
 }

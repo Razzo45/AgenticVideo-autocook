@@ -135,6 +135,8 @@ export async function brainWithTools(opts: {
   model?: string;
   system: string;
   user: string;
+  /** When set, this is the operator turn (text plus attached files). `user` is ignored. */
+  userParts?: Part[];
   tools: FunctionDeclaration[];
   onTool: BrainToolHandler;
   maxRounds?: number;
@@ -144,7 +146,9 @@ export async function brainWithTools(opts: {
   const model = opts.model?.trim() || BRAIN_MODEL;
   const maxRounds = opts.maxRounds ?? 10;
 
-  const contents: Content[] = [{ role: "user", parts: [{ text: opts.user }] }];
+  const contents: Content[] = [
+    { role: "user", parts: opts.userParts?.length ? opts.userParts : [{ text: opts.user }] },
+  ];
 
   for (let round = 0; round < maxRounds; round++) {
     opts.onStatus?.(`Argon tool round ${round + 1}/${maxRounds}…`);
