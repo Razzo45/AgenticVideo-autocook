@@ -3,8 +3,8 @@
  *
  * Storage model (s3 mode): bucket is canonical; local RUNS_DIR is scratch only.
  *
- * - When a cook finishes: drop staging (shots/inputs/plates) from local + bucket;
- *   keep final.* + small plan/result JSON for download.
+ * - When a cook finishes: drop staging (shots/inputs/plates/argon_media) from local + bucket.
+ *   Keep final.*, the task out/ folder, deliverables.json, and small plan/result JSON for download.
  * - Last interaction older than RUN_TTL_MS (24h): delete the entire run (bucket + local).
  * - Worker also clears local cache after each job once artifacts are committed to S3.
  */
@@ -43,6 +43,10 @@ function isFinished(run: RunRow): boolean {
 function shouldKeepName(name: string): boolean {
   return (
     /^final(\.|$)/i.test(name) ||
+    name === "out" ||
+    name === "deliverables.json" ||
+    name === "argon_plan.json" ||
+    name === "argon_notes.txt" ||
     name === "cook_result.json" ||
     name === "stitch_report.json" ||
     name === "html_plan.json" ||
@@ -97,7 +101,7 @@ export function purgeRunStaging(runId: string): { removed: string[] } {
 }
 
 /**
- * After a cook finishes: drop staging from local + bucket, keep finals/metadata in bucket.
+ * After a cook finishes: drop staging from local + bucket, keep finals and task outputs in the bucket.
  * Call this as soon as status hits exported/failed/rejected (don't wait for the 5h idle sweep).
  */
 export async function sanitizeFinishedRun(runId: string): Promise<{ removed: string[] }> {
