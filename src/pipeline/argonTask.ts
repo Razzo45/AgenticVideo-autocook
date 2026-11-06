@@ -9,7 +9,7 @@ import { ARGON_MEDIA_TOOL_DECLARATIONS, executeArgonMediaTool, type MediaToolCon
 import { brainCompletion, brainWithTools } from "./geminiBrain";
 import { BRAIN_MODEL } from "./constants";
 import { hydrateRunInputs } from "./inputs";
-import { readOffice } from "./officeText";
+import { classifyAttachment } from "./attachForArgon";
 import { runDir } from "./paths";
 import { stageLocalPath } from "./geminiStaging";
 import { persistRunFile } from "./storage";
@@ -66,89 +66,30 @@ export function parseArgonPlan(text: string): ArgonPlan {
   };
 }
 
-const TEXT_EXT = /\.(txt|md|json|csv|html)$/i;
-const IMAGE_MIME: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-  ".gif": "image/gif",
-  ".heic": "image/heic",
-  ".heif": "image/heif",
-};
-const MEDIA_MIME: Record<string, string> = {
-  ".mp4": "video/mp4",
-  ".mov": "video/quicktime",
-  ".webm": "video/webm",
-  ".mp3": "audio/mpeg",
-  ".wav": "audio/wav",
-  ".m4a": "audio/mp4",
-  ".aac": "audio/aac",
-  ".flac": "audio/flac",
-};
-const OFFICE_EXT = /\.(docx|pptx|xlsx)$/i;
-const TEXT_MAX_CHARS = 80_000;
-const MEDIA_MAX_BYTES = 200 * 1024 * 1024;
-
-function clipText(text: string): string {
-  if (text.length <= TEXT_MAX_CHARS) return text;
-  return `${text.slice(0, TEXT_MAX_CHARS)}\n[The rest of this file was cut for length.]`;
-}
-
 async function operatorParts(run: RunRow): Promise<Part[]> {
   const inputs = await hydrateRunInputs(run.input_assets_json);
   const userParts: Part[] = [{ text: run.initial_prompt }];
+  const spillDir = path.join(runDir(run.id), "inputs", "_read");
   for (const file of inputs) {
     if (!file.path || !fs.existsSync(file.path)) continue;
     const name = file.filename || path.basename(file.path);
-    const ext = path.extname(name).toLowerCase();
-    const imageMime = IMAGE_MIME[ext];
-    const mediaMime = MEDIA_MIME[ext];
-    if (mediaMime && fs.statSync(file.path).size > MEDIA_MAX_BYTES) {
-      const size = fs.statSync(file.path).size;
-      userParts.push({
-        text: `Attached file: ${name}. It is ${size} bytes, stored with the task, and too large to play inside this reading.`,
-      } as Part);
-      continue;
-    }
-    const buf = fs.readFileSync(file.path);
-    if (imageMime) {
-      userParts.push({ text: `Attached file: ${name}` } as Part);
-      userParts.push({ inlineData: { mimeType: imageMime, data: buf.toString("base64") } } as Part);
-    } else if (ext === ".pdf") {
-      userParts.push({ text: `Attached file: ${name}` } as Part);
-      const staged = await stageLocalPath(file.path, "application/pdf", { runId: run.id });
-      userParts.push(
-        staged.kind === "inline"
-          ? ({ inlineData: { mimeType: staged.mime, data: staged.data } } as Part)
-          : ({ fileData: { fileUri: staged.data, mimeType: staged.mime } } as Part),
-      );
-    } else if (TEXT_EXT.test(name)) {
-      userParts.push({ text: `Attached file ${name}:\n${clipText(buf.toString("utf8"))}` } as Part);
-    } else if (OFFICE_EXT.test(name)) {
-      const pieces = await readOffice(buf, name);
-      if (!pieces) {
-        userParts.push({ text: `Attached file: ${name}` } as Part);
+    const pieces = await classifyAttachment({ name, filePath: file.path, spillDir });
+    for (const piece of pieces) {
+      if (piece.kind === "note") {
+        userParts.push({ text: piece.text } as Part);
         continue;
       }
-      for (const piece of pieces) {
-        if (piece.kind === "text") {
-          userParts.push({ text: `Attached file ${name}:\n${clipText(piece.text)}` } as Part);
-        } else {
-          userParts.push({ text: `Image inside ${name}: ${piece.filename}` } as Part);
-          userParts.push({ inlineData: { mimeType: piece.mime, data: piece.data.toString("base64") } } as Part);
-        }
+      userParts.push({ text: piece.label } as Part);
+      if (piece.kind === "inline") {
+        userParts.push({ inlineData: { mimeType: piece.mime, data: piece.data.toString("base64") } } as Part);
+        continue;
       }
-    } else if (mediaMime) {
-      userParts.push({ text: `Attached file: ${name}` } as Part);
-      const staged = await stageLocalPath(file.path, mediaMime, { runId: run.id, forceStage: true });
+      const staged = await stageLocalPath(piece.path, piece.mime, { runId: run.id, forceStage: piece.forceStage });
       userParts.push(
         staged.kind === "inline"
           ? ({ inlineData: { mimeType: staged.mime, data: staged.data } } as Part)
           : ({ fileData: { fileUri: staged.data, mimeType: staged.mime } } as Part),
       );
-    } else {
-      userParts.push({ text: `Attached file: ${name}` } as Part);
     }
   }
   return userParts;
