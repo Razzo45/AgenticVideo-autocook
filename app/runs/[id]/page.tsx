@@ -87,6 +87,7 @@ type Detail = {
   stitch: { report?: { pass: boolean; checks: Array<{ id: string; label: string; pass: boolean; detail: string }> } } | null;
   finalPath: string | null;
   audioDeliverables?: Array<{ id: string; label: string; path: string }>;
+  deliverables?: Array<{ id: string; label: string; path: string }>;
 };
 
 function liveStage(run: Detail["run"], hasCurrentKeyframe: boolean): StageId {
@@ -225,12 +226,13 @@ export default function RunDetailPage() {
   if (error) return <p className="err">{error}</p>;
   if (!data) return <p>Loading…</p>;
 
-  const { run, script, audioPlan, variants, stitch, finalPath, audioDeliverables, sceneProgress } = data;
+  const { run, script, audioPlan, variants, stitch, finalPath, audioDeliverables, deliverables, sceneProgress } = data;
   const mode = run.pipeline_mode || "auto";
+  const isTask = mode === "task";
   const isAudio = mode === "audio";
   const isDoc = mode === "html" || mode === "image" || mode === "pptx" || mode === "pdf";
   const isImageDoc = mode === "image";
-  const isVideo = !isAudio && !isDoc;
+  const isVideo = !isAudio && !isDoc && !isTask;
   const audioMasters =
     audioDeliverables && audioDeliverables.length > 0
       ? audioDeliverables
@@ -253,7 +255,8 @@ export default function RunDetailPage() {
       : sceneProgress?.nextAction === "stitch"
         ? "Resume — stitch"
         : "Resume";
-  const downloadPath = isAudio ? audioMasters[0]?.path : finalPath;
+  const taskFiles = deliverables ?? [];
+  const downloadPath = isTask ? taskFiles[0]?.path : isAudio ? audioMasters[0]?.path : finalPath;
   const masterReady =
     Boolean(downloadPath) && (run.status === "exported" || run.gate === "audit");
   const downloadName = downloadPath
@@ -338,6 +341,16 @@ export default function RunDetailPage() {
               </p>
             </div>
           )}
+          {isTask && taskFiles.length > 0 && (
+            <div className="card" style={{ marginBottom: 16, display: "grid", gap: 12 }}>
+              {taskFiles.map((file) => (
+                <div key={file.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+                  <span>{file.label}</span>
+                  <a href={`${mediaSrc(file.path)}&download=1`}>Download</a>
+                </div>
+              ))}
+            </div>
+          )}
           {isAudio && audioMasters.length > 0 && (
             <div className="card" style={{ marginBottom: 16 }}>
               {audioMasters.map((m) => (
@@ -357,6 +370,7 @@ export default function RunDetailPage() {
                 Save the finished master to your machine.
               </p>
             </div>
+            {!isTask && (
             <a
               className="btn primary"
               href={`${mediaSrc(downloadPath)}&download=1`}
@@ -364,6 +378,7 @@ export default function RunDetailPage() {
             >
               Download
             </a>
+            )}
           </div>
         </>
       )}

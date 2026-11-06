@@ -42,6 +42,7 @@ export const PIPELINE_MODES = [
   "image",
   "pptx",
   "pdf",
+  "task",
 ] as const;
 export type PipelineMode = (typeof PIPELINE_MODES)[number];
 
@@ -83,7 +84,7 @@ export function durationBounds(mode: PipelineMode): { min: number; max: number }
   if (mode === "direct") return { min: MIN_DURATION_DIRECT_SEC, max: MAX_DURATION_DIRECT_SEC };
   if (mode === "auto") return { min: MIN_DURATION_AUTO_SEC, max: MAX_DURATION_AUTO_SEC };
   if (mode === "audio") return { min: MIN_DURATION_AUDIO_SEC, max: MAX_DURATION_AUDIO_SEC };
-  if (isDocPipelineMode(mode)) return { min: 1, max: 1 };
+  if (mode === "task" || isDocPipelineMode(mode)) return { min: 1, max: 1 };
   return { min: MIN_DURATION_SEC, max: MAX_DURATION_SEC };
 }
 export const VARIANT_COUNT_DEFAULT = 5;

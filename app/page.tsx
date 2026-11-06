@@ -87,7 +87,7 @@ export default function CookHomePage() {
         <p className="cook-eyebrow">Autocook</p>
         <h2>Paste the task. Click COOK. Walk away.</h2>
         <p className="sub">
-          Argon reads the task and starts one cook per deliverable. Each finished file downloads on its own.
+          Argon reads the prompt and the files, then makes the deliverables. Those files are the downloads.
         </p>
       </header>
 

@@ -34,6 +34,11 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
           type: Type.STRING,
           description: "Relative path in the bundle, e.g. assets/hero.png",
         },
+        references: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: "Attached filenames to send with this prompt, unchanged.",
+        },
         width: { type: Type.NUMBER },
         height: { type: Type.NUMBER },
         embed: {
@@ -59,6 +64,11 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         },
         duration_sec: { type: Type.NUMBER, description: "3–10 seconds." },
         aspect: { type: Type.STRING, description: "16:9 or 9:16" },
+        references: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: "Attached filenames to send with this prompt, unchanged.",
+        },
       },
       required: ["id", "prompt", "filename"],
     },
@@ -104,12 +114,19 @@ function safeRel(rel: string): string {
   return norm;
 }
 
-async function generatePngBytes(prompt: string): Promise<Buffer> {
+async function generatePngBytes(prompt: string, referenceImagePaths: string[] = []): Promise<Buffer> {
   const ai = new GoogleGenAI({ apiKey: requireGeminiKey() });
+  const parts: Array<Record<string, unknown>> = [{ text: prompt.trim() }];
+  for (const ref of referenceImagePaths) {
+    if (!ref || !fs.existsSync(ref)) continue;
+    const buf = fs.readFileSync(ref);
+    const mime = /\.png$/i.test(ref) ? "image/png" : "image/jpeg";
+    parts.push({ inlineData: { mimeType: mime, data: buf.toString("base64") } });
+  }
   return withGeminiAdmission("image", async () => {
     const result = await ai.models.generateContent({
       model: IMAGE_MODEL,
-      contents: [{ role: "user", parts: [{ text: prompt.trim() }] }],
+      contents: [{ role: "user", parts }],
       config: { responseModalities: ["IMAGE", "TEXT"] },
     });
     for (const c of result.candidates ?? []) {
@@ -126,8 +143,28 @@ export type MediaToolContext = {
   stagingDir: string;
   staged: Map<string, StagedMedia>;
   referenceImagePaths?: string[];
+  /** Basename → file path for references Argon names on a tool call. */
+  filesByName?: Map<string, string>;
+  /** When true, attach only the files Argon names. Do not add the rest. */
+  namedReferencesOnly?: boolean;
   onStatus?: (msg: string) => void;
 };
+
+function namedRefs(args: Record<string, unknown>, ctx: MediaToolContext): string[] {
+  const raw = args.references ?? args.reference_files;
+  const wanted = Array.isArray(raw) ? raw.map((v) => String(v)) : [];
+  if (!wanted.length) {
+    return ctx.namedReferencesOnly ? [] : (ctx.referenceImagePaths ?? []);
+  }
+  const out: string[] = [];
+  for (const name of wanted) {
+    const base = name.replace(/\\/g, "/").split("/").pop()?.toLowerCase();
+    if (!base) continue;
+    const hit = ctx.filesByName?.get(base);
+    if (hit) out.push(hit);
+  }
+  return out;
+}
 
 export async function executeArgonMediaTool(
   name: string,
@@ -144,7 +181,7 @@ export async function executeArgonMediaTool(
     if (!prompt) throw new Error("generate_image: prompt required");
     const embed = String(args.embed ?? "path") === "data_uri" ? "data_uri" : "path";
     ctx.onStatus?.(`Argon tool generate_image (${id})…`);
-    const buf = await generatePngBytes(prompt);
+    const buf = await generatePngBytes(prompt, namedRefs(args, ctx).filter((p) => /\.(png|jpe?g|webp)$/i.test(p)));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     fs.writeFileSync(absPath, buf);
@@ -220,7 +257,7 @@ export async function executeArgonMediaTool(
       duration,
       aspectRatio: aspect,
       brainOwnedPrompt: true,
-      referenceImagePaths: ctx.referenceImagePaths,
+      referenceImagePaths: namedRefs(args, ctx).filter((p) => /\.(png|jpe?g|webp)$/i.test(p)),
       onStatus: ctx.onStatus,
     });
     ctx.staged.set(id, {

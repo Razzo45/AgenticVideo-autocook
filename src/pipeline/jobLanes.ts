@@ -72,6 +72,9 @@ export function classifyCookJob(
   if (pipelineMode === "html" || pipelineMode === "pdf" || isDocPipelineMode(pipelineMode ?? "")) {
     return { lane: LANE_DEFAULT, heavy: false, archive: false };
   }
+  if (pipelineMode === "task" || jobType === "argon_task") {
+    return { lane: LANE_DEFAULT, heavy: true, archive: false };
+  }
   if (isVideoMode(pipelineMode) || ["script", "keyframes", "clips", "stitch", "export"].includes(jobType)) {
     return { lane: LANE_DEFAULT, heavy: true, archive: false };
   }
