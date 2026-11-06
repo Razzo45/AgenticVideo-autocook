@@ -47,34 +47,26 @@ const result = await runAutocook({
 - `PRODUCT_IMAGE_MODEL` — optional image model override
 - `LIBREOFFICE_BIN` / Chrome / Edge — for PDF export
 
-## Product UI / GDP job queue
+## Product UI / task queue
 
-`POST /api/cook` enqueues into `runs/pipeline.db`. Claim logic is a port of GDP `src/lib/jobs/queue.ts` + `src/domain/jobs.ts`:
+`POST /api/cook` enqueues one task into `runs/pipeline.db`. The body is the prompt and files. There is no deliverable kind.
 
-1. **Lanes** (lower first, then `created_at`): fast → default → generate → helper → archive  
-2. **Light jobs** always eligible  
-3. **Heavy / archive** only if running heavy &lt; `HEAVY_RUNNING_MAX` (2)  
-4. **Helper lane** (audio) only if running helpers &lt; `HELPER_RUNNING_MAX` (1)  
-5. Worker concurrency `maxParallelRuns: 2` (same as GDP default)
+Claim logic:
 
-| Lane | Cook kinds | Heavy? |
-|-----:|------------|--------|
-| 0 fast | image | no |
-| 1 default | html, pdf, video stages | video yes |
-| 2 generate | pptx | no |
-| 3 helper | audio | yes |
-| 4 archive | reserved | — |
+1. `argon_plan` is text. Argon names the files. That job can run while a deliverable task is generating.
+2. `argon_execute` is the deliverable queue. One of those runs at a time. Weight is the sum of the plan: image 10, svg 5, html 10, pdf 15, pptx 20, audio 20, video 30.
+3. A run that already finished a generation stage is claimed before a new deliverable task. Among new tasks, lower `task_weight` goes first.
+4. The worker allows the running deliverable task plus one plan read (`maxParallelRuns: 2`).
 
 Railway: web + `tsx src/worker.ts` on the same volume.
 
 ### Concurrency / 429 / idempotency (heavier than GDP text)
 
-Job lanes only schedule cooks. Gemini calls also go through **GDP AdaptiveAdmission** (`geminiAdmission.ts`), retuned for media:
+Job admission runs one deliverable task at a time. A text plan can be read in the other slot. Gemini calls inside a job still go through **GDP AdaptiveAdmission** (`geminiAdmission.ts`), retuned for media:
 
 - Process ceiling **2** (GDP text often 16–96) · floor **1** · owner ceiling **1**
 - Lanes: `argon` / `image` / `omni` / `files`
 - On 429: AIMD halve + Retry-After cooldown + paced retry (no fan-out storm)
-- Heavy cook cap **1** (Omni/audio) so a 2nd worker slot stays free for light docs
 - `requestId` on `POST /api/cook` is idempotent (same key → same run, no double enqueue)
 
 ## Railway / staging / hygiene

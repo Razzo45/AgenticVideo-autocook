@@ -17,7 +17,7 @@ Keep the legacy `Dockerfile` + `deploy/start.sh` only for single-box smoke tests
 - `AUTH_MODE=strict` — required on Railway (no anonymous UI)
 - `AUTOCOOK_JWT_SECRET` — HS256 secret for launch/session JWTs
 - `AUTOCOOK_SERVICE_TOKEN` — shared bearer for mother → Autocook service calls
-- `DATABASE_URL` — Postgres (leases + runs/jobs). Apply `sql/001_railway_gemini.sql` then `sql/002_runs_ownership.sql` once.
+- `DATABASE_URL` — Postgres (leases + runs/jobs). Schema files `sql/001` through `sql/004` apply on web and worker boot.
 - Auth contract: `docs/auth-contract.md`
 - `S3_*` / `STORAGE_S3_*` — prefer Railway bucket refs so the canvas links:
   - `S3_BUCKET=${{autocook.BUCKET}}`

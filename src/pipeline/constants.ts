@@ -91,7 +91,7 @@ export const VARIANT_COUNT_DEFAULT = 5;
 export const MAX_REWORK_ROUNDS = 2;
 export const MIN_PARALLEL_RUNS = 1;
 export const MAX_PARALLEL_RUNS = 12;
-/** GDP worker default — light jobs can overlap; heavy capped separately in claimNextJob. */
+/** One deliverable task at a time, plus a text plan can be read while that task runs. */
 export const DEFAULT_PARALLEL_RUNS = 2;
 export const RESOLUTION_FLOOR = 1080;
 /** Delivery / request resolution for video + stitch. */

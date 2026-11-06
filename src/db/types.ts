@@ -63,6 +63,8 @@ export type JobRow = {
   type: string;
   status: "pending" | "running" | "done" | "error";
   weight: number;
+  /** Sum of deliverable units. Lower is admitted first. */
+  task_weight: number;
   heavy: number;
   archive: number;
   payload_json: string;

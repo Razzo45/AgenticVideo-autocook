@@ -4,11 +4,9 @@ import { DB_PATH, RUNS_DIR } from "../pipeline/paths";
 import { postgresConfigured } from "../pipeline/pg";
 import {
   classifyCookJob,
-  HEAVY_RUNNING_MAX,
-  HELPER_RUNNING_MAX,
   LANE_DEFAULT,
-  LANE_HELPER,
 } from "../pipeline/jobLanes";
+import { scheduleForJob } from "../pipeline/taskWeight";
 import type { AssetRow, JobRow, ReviewRow, RunRow, VariantRow } from "./types";
 import * as pg from "./pgBackend";
 
@@ -174,6 +172,9 @@ function migrateJobs(database: DatabaseSync): void {
   }
   if (!cols.some((c) => c.name === "archive")) {
     database.exec("ALTER TABLE jobs ADD COLUMN archive INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!cols.some((c) => c.name === "task_weight")) {
+    database.exec("ALTER TABLE jobs ADD COLUMN task_weight INTEGER NOT NULL DEFAULT 10");
   }
   // One-shot: remap pre-GDP numeric weights (10/20/…/100) into lane 0–4 + heavy.
   if (addedHeavy) {
@@ -409,6 +410,7 @@ export async function enqueueJob(runId: string, type: string, payload: unknown =
   const ts = nowIso();
   const run = await getRun(runId);
   const cls = classifyCookJob(run?.pipeline_mode, type);
+  const schedule = scheduleForJob(runId, run?.pipeline_mode, type);
   const base =
     payload && typeof payload === "object" && !Array.isArray(payload)
       ? (payload as Record<string, unknown>)
@@ -418,11 +420,13 @@ export async function enqueueJob(runId: string, type: string, payload: unknown =
     ...(cls.heavy ? { heavy: true } : {}),
     ...(cls.archive ? { archive: true } : {}),
     lane: cls.lane,
+    taskWeight: schedule.weight,
+    taskParts: schedule.parts,
   });
   getDb()
     .prepare(
-      `INSERT INTO jobs (id, run_id, type, status, weight, heavy, archive, payload_json, error, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO jobs (id, run_id, type, status, weight, task_weight, heavy, archive, payload_json, error, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       id,
@@ -430,6 +434,7 @@ export async function enqueueJob(runId: string, type: string, payload: unknown =
       type,
       "pending",
       cls.lane,
+      schedule.weight,
       cls.heavy ? 1 : 0,
       cls.archive ? 1 : 0,
       payloadJson,
@@ -482,11 +487,11 @@ export async function runHasBusyJobs(runId: string): Promise<boolean> {
 }
 
 /**
- * GDP `claimNext` port (SQLite):
- *  - light jobs always eligible
- *  - heavy/archive only if running heavy+archive < HEAVY_RUNNING_MAX
- *  - helper lane (audio) only if running helper < HELPER_RUNNING_MAX
- *  - order: lane ASC, created_at ASC
+ * Two queues:
+ * - argon_plan is text. It can run while a deliverable task is generating.
+ * - Every other job is the deliverable queue. One of those runs at a time.
+ *   A run that already finished a generation stage goes first.
+ *   Among new deliverable tasks, lower task_weight (from Argon's plan) goes first.
  */
 export async function claimNextJob(): Promise<JobRow | undefined> {
   if (usePg()) return pg.pgClaimNextJob();
@@ -501,25 +506,26 @@ export async function claimNextJob(): Promise<JobRow | undefined> {
              SELECT 1 FROM jobs r WHERE r.run_id = j.run_id AND r.status = 'running'
            )
            AND (
-             (COALESCE(j.heavy, 0) = 0 AND COALESCE(j.archive, 0) = 0)
-             OR (
-               SELECT COUNT(*) FROM jobs rh
-               WHERE rh.status = 'running'
-                 AND (COALESCE(rh.heavy, 0) = 1 OR COALESCE(rh.archive, 0) = 1)
-             ) < ?
+             j.type = 'argon_plan'
+             OR NOT EXISTS (
+               SELECT 1 FROM jobs busy
+               WHERE busy.status = 'running' AND busy.type <> 'argon_plan'
+             )
            )
-           AND (
-             COALESCE(j.weight, ${LANE_DEFAULT}) <> ${LANE_HELPER}
-             OR (
-               SELECT COUNT(*) FROM jobs rh
-               WHERE rh.status = 'running'
-                 AND COALESCE(rh.weight, ${LANE_DEFAULT}) = ${LANE_HELPER}
-             ) < ?
-           )
-         ORDER BY COALESCE(j.weight, ${LANE_DEFAULT}) ASC, j.created_at ASC
+         ORDER BY
+           CASE
+             WHEN j.type <> 'argon_plan' AND EXISTS (
+               SELECT 1 FROM jobs prev
+               WHERE prev.run_id = j.run_id AND prev.status = 'done' AND prev.type <> 'argon_plan'
+             ) THEN 0
+             WHEN j.type <> 'argon_plan' THEN 1
+             ELSE 2
+           END,
+           CASE WHEN j.type = 'argon_plan' THEN 0 ELSE COALESCE(j.task_weight, 10) END ASC,
+           j.created_at ASC
          LIMIT 1`,
       )
-      .get(HEAVY_RUNNING_MAX, HELPER_RUNNING_MAX) as JobRow | undefined;
+      .get() as JobRow | undefined;
     if (!job) {
       database.exec("COMMIT");
       return undefined;
@@ -533,6 +539,7 @@ export async function claimNextJob(): Promise<JobRow | undefined> {
     return {
       ...job,
       weight: Number(job.weight ?? LANE_DEFAULT),
+      task_weight: Number(job.task_weight ?? 10),
       heavy: Number(job.heavy ?? 0),
       archive: Number(job.archive ?? 0),
       status: "running",

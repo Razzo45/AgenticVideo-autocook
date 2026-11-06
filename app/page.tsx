@@ -93,7 +93,7 @@ export default function CookHomePage() {
 
       <div className="ws-tracker" aria-hidden>
         <div className="ws-tracker-step is-active">1 · Ingest</div>
-        <div className="ws-tracker-step">2 · Preflight</div>
+        <div className="ws-tracker-step">2 · Queue</div>
         <div className="ws-tracker-step">3 · Cook</div>
         <div className="ws-tracker-step">4 · Download</div>
       </div>
@@ -107,7 +107,7 @@ export default function CookHomePage() {
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             required
-            placeholder="Paste the full task brief here. Aspect, duration, and audio vs video are inferred when possible."
+            placeholder="Paste the full task and attach the files. Argon decides the deliverables."
           />
         </div>
 

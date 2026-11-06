@@ -77,16 +77,19 @@ export async function brainCompletion(opts: {
   model?: string;
   messages: BrainMessage[];
   json?: boolean;
+  /** Operator turn, including attached files. When set, message text parts are not used. */
+  userParts?: Part[];
 }): Promise<string> {
   const ai = brainClient();
   const model = opts.model?.trim() || BRAIN_MODEL;
   const { system, parts } = flattenMessages(opts.messages);
-  if (!parts.length) throw new Error("brainCompletion: empty user content");
+  const userParts = opts.userParts?.length ? opts.userParts : (parts as Part[]);
+  if (!userParts.length) throw new Error("brainCompletion: empty user content");
 
   return withGeminiAdmission("argon", async () => {
     const result = await ai.models.generateContent({
       model,
-      contents: [{ role: "user", parts }],
+      contents: [{ role: "user", parts: userParts }],
       config: {
         ...(system ? { systemInstruction: system } : {}),
         ...(opts.json ? { responseMimeType: "application/json" } : {}),

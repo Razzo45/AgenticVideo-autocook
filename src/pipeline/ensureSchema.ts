@@ -1,5 +1,5 @@
 /**
- * Idempotent apply of sql/001 + sql/002 when DATABASE_URL is set.
+ * Idempotent apply of sql/001 through sql/004 when DATABASE_URL is set.
  * Safe to call from web and worker on boot.
  */
 import fs from "node:fs";
@@ -13,7 +13,12 @@ export async function ensureRailwaySchema(): Promise<void> {
   const pool = getPgPool();
   if (!pool) return;
   const root = process.cwd();
-  const files = ["sql/001_railway_gemini.sql", "sql/002_runs_ownership.sql", "sql/003_cook_tasks.sql"];
+  const files = [
+    "sql/001_railway_gemini.sql",
+    "sql/002_runs_ownership.sql",
+    "sql/003_cook_tasks.sql",
+    "sql/004_task_weight.sql",
+  ];
   const client = await pool.connect();
   try {
     for (const rel of files) {
