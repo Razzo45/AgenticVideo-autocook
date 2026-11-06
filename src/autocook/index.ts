@@ -12,6 +12,7 @@ export { runAutocook } from "./runAutocook";
 export { preflightCook } from "./preflightCook";
 export { rewriteSceneForFilter, applySceneRewrite } from "./rewriteScene";
 export { inferCookKind } from "./inferCookKind";
+export { splitCooks, normalizeCookSplit, fallbackCookSplit } from "./splitCooks";
 export { generateHtml } from "./generateHtml";
 export { generateImages } from "./generateImage";
 export { generatePptx } from "./generatePptx";

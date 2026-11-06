@@ -13,7 +13,7 @@ export async function ensureRailwaySchema(): Promise<void> {
   const pool = getPgPool();
   if (!pool) return;
   const root = process.cwd();
-  const files = ["sql/001_railway_gemini.sql", "sql/002_runs_ownership.sql"];
+  const files = ["sql/001_railway_gemini.sql", "sql/002_runs_ownership.sql", "sql/003_cook_tasks.sql"];
   const client = await pool.connect();
   try {
     for (const rel of files) {

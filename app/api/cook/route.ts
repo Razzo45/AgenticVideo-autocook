@@ -1,5 +1,7 @@
 import { fail, ok } from "@/src/api";
 import { isAuthError, requireUser } from "@/src/auth/resolve";
+import type { AuthUser } from "@/src/auth/types";
+import { findCookTask, getRun, rememberCookTask, type CookTaskItem } from "@/src/db";
 import {
   CATEGORIES,
   durationBounds,
@@ -12,6 +14,7 @@ import {
 import { createRun } from "@/src/pipeline/orchestrator";
 import { preflightCook } from "@/src/autocook/preflightCook";
 import { inferCookKind } from "@/src/autocook/inferCookKind";
+import { splitCooks } from "@/src/autocook/splitCooks";
 import type { CookKind } from "@/src/pipeline/schemaDocs";
 
 function inferAspect(prompt: string): VideoAspect {
@@ -49,12 +52,14 @@ export async function POST(req: Request) {
     let inputFiles: Array<{ originalName: string; data: Buffer }> = [];
     let forcedKind: CookKind | undefined;
     let requestId: string | undefined;
+    let fanout = false;
 
     if (ct.includes("multipart/form-data")) {
       const form = await req.formData();
       prompt = String(form.get("prompt") ?? "").trim();
       sessionLabel = String(form.get("sessionLabel") ?? "").trim() || undefined;
       requestId = String(form.get("requestId") ?? "").trim() || undefined;
+      fanout = String(form.get("fanout") ?? "").trim() === "1" || String(form.get("fanout") ?? "").trim() === "true";
       const cat = String(form.get("category") ?? "").trim();
       if (CATEGORIES.includes(cat as Category)) category = cat as Category;
       const kindRaw = String(form.get("kind") ?? "").trim();
@@ -75,10 +80,12 @@ export async function POST(req: Request) {
         category?: string;
         kind?: string;
         requestId?: string;
+        fanout?: boolean;
       };
       prompt = String(body.prompt ?? "").trim();
       sessionLabel = body.sessionLabel?.trim() || undefined;
       requestId = body.requestId?.trim() || undefined;
+      fanout = body.fanout === true;
       if (body.category && CATEGORIES.includes(body.category as Category)) {
         category = body.category as Category;
       }
@@ -90,6 +97,19 @@ export async function POST(req: Request) {
     if (!prompt) return fail("paste a task body to cook");
 
     const names = inputFiles.map((f) => f.originalName);
+    // Omit kind (or send fanout) and Argon splits the task into one cook per deliverable.
+    if (!forcedKind || fanout) {
+      return await enqueueFanout({
+        user,
+        prompt,
+        names,
+        inputFiles,
+        category,
+        sessionLabel,
+        requestId,
+        aspect: inferAspect(prompt),
+      });
+    }
     const kind = forcedKind ?? inferCookKind(prompt, names);
     const aspect = inferAspect(prompt);
     const duration = inferDuration(prompt, kind);
@@ -166,4 +186,128 @@ export async function POST(req: Request) {
     if (isAuthError(err)) return fail("unauthorized", 401);
     return fail(err instanceof Error ? err.message : String(err), 500);
   }
+}
+
+async function enqueueFanout(input: {
+  user: AuthUser;
+  prompt: string;
+  names: string[];
+  inputFiles: Array<{ originalName: string; data: Buffer }>;
+  category: Category;
+  sessionLabel?: string;
+  requestId?: string;
+  aspect: VideoAspect;
+}) {
+  const taskId =
+    input.requestId?.trim() ||
+    `task_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+  if (input.requestId?.trim()) {
+    const existing = await findCookTask(taskId, input.user.userId);
+    if (existing?.length) {
+      return ok({
+        blocked: false,
+        fanout: true,
+        taskId,
+        kind: existing[0].kind,
+        cooks: existing,
+        run: (await getRun(existing[0].runId)) ?? null,
+        preflight: {
+          status: "clear" as const,
+          risks: [],
+          rewrittenBrief: input.prompt,
+          notes: ["existing task"],
+          brainModel: "none",
+        },
+      });
+    }
+  }
+
+  const guessed = inferCookKind(input.prompt, input.names);
+  const preflight =
+    input.user.kind === "service"
+      ? {
+          status: "clear" as const,
+          risks: [],
+          rewrittenBrief: input.prompt,
+          notes: ["preflight skipped for service token"],
+          brainModel: "none",
+        }
+      : await preflightCook({
+          prompt: input.prompt,
+          mode: isDocPipelineMode(cookToPipelineMode(guessed))
+            ? "document"
+            : guessed === "audio"
+              ? "audio"
+              : "video",
+          durationSec: inferDuration(input.prompt, guessed),
+          aspect: input.aspect,
+          attachmentNames: input.names,
+        });
+
+  if (preflight.status === "hardBlock") {
+    return ok({ blocked: true, fanout: true, taskId, preflight, run: null, cooks: [], kind: null });
+  }
+
+  const parts = await splitCooks({
+    prompt: preflight.rewrittenBrief,
+    attachmentNames: input.names,
+  });
+  const cooks: CookTaskItem[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    const childRequestId = `${taskId}:${i + 1}:${part.kind}`;
+    const focused = [
+      `Deliverable type: ${part.kind} only (${part.label}).`,
+      `Focus: ${part.brief}`,
+      "",
+      `Full task — produce only this ${part.kind}. Other deliverables are separate cooks. Do not invent information.`,
+      preflight.rewrittenBrief,
+    ].join("\n");
+    const pipelineMode = cookToPipelineMode(part.kind);
+    const duration = inferDuration(focused, part.kind);
+    const run = await createRun({
+      prompt: focused,
+      category: input.category,
+      duration,
+      aspect: input.aspect,
+      pipelineMode,
+      sessionLabel: input.sessionLabel ? `${input.sessionLabel} — ${part.label}` : part.label,
+      requestId: childRequestId,
+      outputResolution: normalizeOutputResolution("1080p"),
+      inputFiles: input.inputFiles.length ? input.inputFiles : undefined,
+      userId: input.user.userId,
+      tenantId: input.user.tenantId,
+      createdByKind: input.user.kind,
+      autoOptions:
+        pipelineMode === "auto"
+          ? {
+              longCook: duration > 120,
+              deliver4k: false,
+              presenterIdentity: false,
+              voiceGuidance: false,
+              verbatimScript: true,
+              brandLock: true,
+              timedGraphics: false,
+            }
+          : undefined,
+    });
+    cooks.push({
+      kind: part.kind,
+      label: part.label,
+      brief: part.brief,
+      runId: run.id,
+      requestId: childRequestId,
+    });
+  }
+  await rememberCookTask(taskId, input.user.userId, cooks);
+  return ok({
+    blocked: false,
+    fanout: true,
+    taskId,
+    kind: cooks[0]?.kind ?? null,
+    cooks,
+    run: cooks[0] ? ((await getRun(cooks[0].runId)) ?? null) : null,
+    preflight,
+  });
 }
