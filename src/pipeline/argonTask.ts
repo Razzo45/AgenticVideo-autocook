@@ -9,7 +9,9 @@ import { ARGON_MEDIA_TOOL_DECLARATIONS, executeArgonMediaTool, type MediaToolCon
 import { brainCompletion, brainWithTools } from "./geminiBrain";
 import { BRAIN_MODEL } from "./constants";
 import { hydrateRunInputs } from "./inputs";
+import { classifyAttachment } from "./attachForArgon";
 import { runDir } from "./paths";
+import { stageLocalPath } from "./geminiStaging";
 import { persistRunFile } from "./storage";
 import { weightFromDeliverables, type PlannedDeliverable } from "./taskWeight";
 import { enqueueJob, updateRun, upsertAsset, type RunRow } from "../db";
@@ -67,22 +69,27 @@ export function parseArgonPlan(text: string): ArgonPlan {
 async function operatorParts(run: RunRow): Promise<Part[]> {
   const inputs = await hydrateRunInputs(run.input_assets_json);
   const userParts: Part[] = [{ text: run.initial_prompt }];
+  const spillDir = path.join(runDir(run.id), "inputs", "_read");
   for (const file of inputs) {
     if (!file.path || !fs.existsSync(file.path)) continue;
     const name = file.filename || path.basename(file.path);
-    const buf = fs.readFileSync(file.path);
-    const lower = name.toLowerCase();
-    if (/\.(png|jpe?g|webp|gif)$/i.test(lower)) {
-      const mime = lower.endsWith(".png") ? "image/png" : lower.endsWith(".webp") ? "image/webp" : "image/jpeg";
-      userParts.push({ text: `Attached file: ${name}` } as Part);
-      userParts.push({ inlineData: { mimeType: mime, data: buf.toString("base64") } } as Part);
-    } else if (lower.endsWith(".pdf")) {
-      userParts.push({ text: `Attached file: ${name}` } as Part);
-      userParts.push({ inlineData: { mimeType: "application/pdf", data: buf.toString("base64") } } as Part);
-    } else if (/\.(txt|md|json|csv|html)$/i.test(lower) && buf.length < 200_000) {
-      userParts.push({ text: `Attached file ${name}:\n${buf.toString("utf8")}` } as Part);
-    } else {
-      userParts.push({ text: `Attached file: ${name}` } as Part);
+    const pieces = await classifyAttachment({ name, filePath: file.path, spillDir });
+    for (const piece of pieces) {
+      if (piece.kind === "note") {
+        userParts.push({ text: piece.text } as Part);
+        continue;
+      }
+      userParts.push({ text: piece.label } as Part);
+      if (piece.kind === "inline") {
+        userParts.push({ inlineData: { mimeType: piece.mime, data: piece.data.toString("base64") } } as Part);
+        continue;
+      }
+      const staged = await stageLocalPath(piece.path, piece.mime, { runId: run.id, forceStage: piece.forceStage });
+      userParts.push(
+        staged.kind === "inline"
+          ? ({ inlineData: { mimeType: staged.mime, data: staged.data } } as Part)
+          : ({ fileData: { fileUri: staged.data, mimeType: staged.mime } } as Part),
+      );
     }
   }
   return userParts;
