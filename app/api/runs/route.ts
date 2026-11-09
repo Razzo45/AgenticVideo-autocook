@@ -12,6 +12,8 @@ import {
   type PipelineMode,
   type VideoAspect,
 } from "@/src/pipeline/constants";
+import { takeMultipartInputs } from "@/src/pipeline/multipartInputs";
+import type { RunInputFile } from "@/src/pipeline/inputs";
 import { createRun, sceneProgressForRun } from "@/src/pipeline/orchestrator";
 import { liveStatus } from "@/src/pipeline/progress";
 import { parseAutoOptions, type AutoOptions } from "@/src/pipeline/autoOptions";
@@ -62,7 +64,8 @@ async function parseCreateBody(req: Request): Promise<{
   operatorScript?: string;
   outputResolution?: OutputResolution;
   autoOptions?: AutoOptions;
-  inputFiles?: Array<{ originalName: string; data: Buffer }>;
+  inputFiles?: RunInputFile[];
+  cleanup: () => void;
 }> {
   const ct = req.headers.get("content-type") ?? "";
   if (ct.includes("multipart/form-data")) {
@@ -79,14 +82,7 @@ async function parseCreateBody(req: Request): Promise<{
     const operatorScript = String(form.get("operatorScript") ?? "").trim() || undefined;
     const outputResolution = normalizeOutputResolution(String(form.get("outputResolution") ?? "1080p"));
     const autoOptions = parseAutoOptionsField(form.get("autoOptions"));
-    const inputFiles: Array<{ originalName: string; data: Buffer }> = [];
-    for (const entry of form.getAll("inputs")) {
-      if (!(entry instanceof File) || !entry.size) continue;
-      inputFiles.push({
-        originalName: entry.name || "input.bin",
-        data: Buffer.from(await entry.arrayBuffer()),
-      });
-    }
+    const taken = await takeMultipartInputs(form);
     return {
       prompt,
       category,
@@ -100,7 +96,8 @@ async function parseCreateBody(req: Request): Promise<{
       operatorScript,
       outputResolution,
       autoOptions,
-      inputFiles,
+      inputFiles: taken.files,
+      cleanup: taken.cleanup,
     };
   }
   const body = (await req.json()) as {
@@ -122,6 +119,7 @@ async function parseCreateBody(req: Request): Promise<{
     outputResolution: normalizeOutputResolution(body.outputResolution),
     autoOptions: body.autoOptions ? parseAutoOptions(body.autoOptions) : undefined,
     inputFiles: undefined,
+    cleanup: () => undefined,
   };
 }
 
@@ -129,6 +127,7 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(req);
     const body = await parseCreateBody(req);
+    try {
     if (!body.prompt?.trim()) return fail("prompt required");
     if (!CATEGORIES.includes(body.category)) return fail("invalid category");
     const mode = body.pipelineMode ?? "auto";
@@ -149,8 +148,9 @@ export async function POST(req: Request) {
         return fail("direct pipeline requires operatorScript or a .md/.txt attachment");
       }
     }
+    const { cleanup: _cleanup, ...fields } = body;
     const run = await createRun({
-      ...body,
+      ...fields,
       aspect,
       outputResolution,
       pipelineMode: mode,
@@ -159,6 +159,9 @@ export async function POST(req: Request) {
       createdByKind: user.kind,
     });
     return ok({ run });
+    } finally {
+      body.cleanup();
+    }
   } catch (err) {
     if (isAuthError(err)) return fail("unauthorized", 401);
     return fail(err instanceof Error ? err.message : String(err), 500);

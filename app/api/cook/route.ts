@@ -2,6 +2,7 @@ import { fail, ok } from "@/src/api";
 import { isAuthError, requireUser } from "@/src/auth/resolve";
 import { CATEGORIES, normalizeOutputResolution, type Category, type VideoAspect } from "@/src/pipeline/constants";
 import { ensureRailwaySchema } from "@/src/pipeline/ensureSchema";
+import { takeMultipartInputs } from "@/src/pipeline/multipartInputs";
 import { createRun } from "@/src/pipeline/orchestrator";
 
 function inferAspect(prompt: string): VideoAspect {
@@ -23,7 +24,6 @@ export async function POST(req: Request) {
     let prompt = "";
     let sessionLabel: string | undefined;
     let category: Category = CATEGORIES[1] ?? CATEGORIES[0];
-    let inputFiles: Array<{ originalName: string; data: Buffer }> = [];
     let requestId: string | undefined;
 
     if (ct.includes("multipart/form-data")) {
@@ -33,12 +33,33 @@ export async function POST(req: Request) {
       requestId = String(form.get("requestId") ?? "").trim() || undefined;
       const cat = String(form.get("category") ?? "").trim();
       if (CATEGORIES.includes(cat as Category)) category = cat as Category;
-      for (const entry of form.getAll("inputs")) {
-        if (!(entry instanceof File) || !entry.size) continue;
-        inputFiles.push({
-          originalName: entry.name || "input.bin",
-          data: Buffer.from(await entry.arrayBuffer()),
+      const taken = await takeMultipartInputs(form);
+      try {
+        if (!prompt) return fail("paste a task body to cook");
+        const run = await createRun({
+          prompt,
+          category,
+          duration: 1,
+          aspect: inferAspect(prompt),
+          pipelineMode: "task",
+          sessionLabel,
+          requestId,
+          outputResolution: normalizeOutputResolution("1080p"),
+          inputFiles: taken.files.length ? taken.files : undefined,
+          userId: user.userId,
+          tenantId: user.tenantId,
+          createdByKind: user.kind,
         });
+        return ok({
+          blocked: false,
+          fanout: false,
+          task: true,
+          stage: "plan",
+          taskWeight: null,
+          run,
+        });
+      } finally {
+        taken.cleanup();
       }
     } else {
       const body = (await req.json()) as {
@@ -66,7 +87,6 @@ export async function POST(req: Request) {
       sessionLabel,
       requestId,
       outputResolution: normalizeOutputResolution("1080p"),
-      inputFiles: inputFiles.length ? inputFiles : undefined,
       userId: user.userId,
       tenantId: user.tenantId,
       createdByKind: user.kind,

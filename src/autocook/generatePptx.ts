@@ -128,9 +128,7 @@ function slideXml(
           <a:p>
             <a:pPr algn="l"/>
             <a:r>
-              <a:rPr lang="en-US" sz="${sz}" dirty="0">${bold}<a:solidFill><a:srgbClr val="111111"/></a:solidFill>
-                <a:latin typeface="Calibri"/>
-              </a:rPr>
+              <a:rPr lang="en-US" sz="${sz}" dirty="0">${bold}<a:solidFill><a:srgbClr val="111111"/></a:solidFill></a:rPr>
               <a:t>${text}</a:t>
             </a:r>
           </a:p>

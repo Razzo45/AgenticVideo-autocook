@@ -10,7 +10,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { getDb, listRuns, type RunRow } from "../db";
+import { getDb, getRun, listRuns, type RunRow } from "../db";
 import { RUNS_DIR, runDir } from "./paths";
 import { deleteRunPrefix, storageMode } from "./storage";
 import { reapGeminiFiles } from "./geminiStaging";
@@ -46,6 +46,7 @@ function shouldKeepName(name: string): boolean {
     name === "out" ||
     name === "deliverables.json" ||
     name === "argon_plan.json" ||
+    name === "argon_composition.json" ||
     name === "argon_notes.txt" ||
     name === "cook_result.json" ||
     name === "stitch_report.json" ||
@@ -60,12 +61,13 @@ function shouldKeepName(name: string): boolean {
 }
 
 /** Keep finals / small metadata; drop everything else under the run dir (local). */
-export function purgeRunStaging(runId: string): { removed: string[] } {
+export function purgeRunStaging(runId: string, opts?: { keepInputs?: boolean }): { removed: string[] } {
   const dir = runDir(runId);
   const removed: string[] = [];
   if (!fs.existsSync(dir)) return { removed };
   for (const name of fs.readdirSync(dir)) {
     if (shouldKeepName(name)) continue;
+    if (opts?.keepInputs && name === "inputs") continue;
     const abs = path.join(dir, name);
     try {
       fs.rmSync(abs, { recursive: true, force: true });
@@ -75,6 +77,7 @@ export function purgeRunStaging(runId: string): { removed: string[] } {
     }
   }
   for (const name of STAGING_NAMES) {
+    if (opts?.keepInputs && name === "inputs") continue;
     const abs = path.join(dir, name);
     if (fs.existsSync(abs)) {
       try {
@@ -105,10 +108,15 @@ export function purgeRunStaging(runId: string): { removed: string[] } {
  * Call this as soon as status hits exported/failed/rejected (don't wait for the 5h idle sweep).
  */
 export async function sanitizeFinishedRun(runId: string): Promise<{ removed: string[] }> {
-  const { removed } = purgeRunStaging(runId);
+  const run = await getRun(runId);
+  const keepInputs = run?.status === "failed" || run?.status === "rejected";
+  const { removed } = purgeRunStaging(runId, { keepInputs });
   if (storageMode() === "s3") {
     const prefixes = new Set(removed);
-    for (const name of STAGING_NAMES) prefixes.add(name);
+    for (const name of STAGING_NAMES) {
+      if (keepInputs && name === "inputs") continue;
+      prefixes.add(name);
+    }
     // Always try shot_* cleanup on bucket even if local was already empty.
     for (let i = 0; i < 32; i++) prefixes.add(`shot_${i}`);
     for (const name of prefixes) {

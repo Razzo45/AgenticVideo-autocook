@@ -50,7 +50,7 @@ curl -X POST "$BASE/api/auth/launch" -H "content-type: application/json" -d "{\"
 }
 ```
 
-Multipart uses the same fields plus one or more `inputs` files. There is no `kind` field. Sending one does nothing. The response includes `taskWeight` and `taskParts`, which are only the queue cost.
+Multipart uses the same fields plus one or more `inputs` files. Send the files here. There is no separate upload step and no link field. There is no `kind` field. Sending one does nothing. A task package is not capped at 10 MB. The response includes `taskWeight` and `taskParts`, which are only the queue cost.
 
 Service callers send `Authorization: Bearer <AUTOCOOK_SERVICE_TOKEN>` and `X-User-Id`. Browser callers send the session cookie. No CORS.
 

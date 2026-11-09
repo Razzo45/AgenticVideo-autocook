@@ -30,5 +30,7 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image).*)"],
+  // API auth is in the route handlers. Leaving /api on this matcher makes Next
+  // clone the body and drop everything past 10 MB before the cook can start.
+  matcher: ["/((?!api/|_next/static|_next/image|favicon.ico).*)"],
 };

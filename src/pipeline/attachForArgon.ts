@@ -107,6 +107,8 @@ export async function classifyAttachment(input: {
   spillDir: string;
   depth?: number;
   label?: string;
+  /** Original names inside an archive → spilled file, so a later build can place them. */
+  placed?: Map<string, string>;
 }): Promise<ArgonAttachment[]> {
   const label = input.label ?? `Attached file: ${input.name}`;
   const depth = input.depth ?? 0;
@@ -139,7 +141,7 @@ export async function classifyAttachment(input: {
   if (LEGACY_OFFICE[ext]) {
     return [note(label, `This is a legacy ${LEGACY_OFFICE[ext]} file. Its contents are not extracted. The file is stored with the task.`)];
   }
-  if (ext === "zip") return zipPieces(input.name, input.filePath, input.spillDir, label, depth);
+  if (ext === "zip") return zipPieces(input.name, input.filePath, input.spillDir, label, depth, input.placed);
   if (MEDIA_MIME[ext]) {
     if (size > MEDIA_MAX_BYTES) {
       return [note(label, `It is ${size} bytes, stored with the task, and too large to play inside this reading.`)];
@@ -163,7 +165,25 @@ async function officePieces(name: string, buf: Buffer, label: string): Promise<A
   return out.length ? out : [note(label, "The office file had no readable text or pictures.")];
 }
 
-async function zipPieces(name: string, filePath: string, spillDir: string, label: string, depth: number): Promise<ArgonAttachment[]> {
+function rememberPlaced(placed: Map<string, string> | undefined, keys: string[], abs: string): void {
+  if (!placed || !fs.existsSync(abs)) return;
+  for (const key of keys) {
+    const norm = key.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+    if (!norm || placed.has(norm)) continue;
+    placed.set(norm, abs);
+    const base = norm.split("/").pop();
+    if (base && !placed.has(base)) placed.set(base, abs);
+  }
+}
+
+async function zipPieces(
+  name: string,
+  filePath: string,
+  spillDir: string,
+  label: string,
+  depth: number,
+  placed?: Map<string, string>,
+): Promise<ArgonAttachment[]> {
   if (depth > 0) return [note(label, "Nested archives are not opened. The archive is stored with the task.")];
   let zip: JSZip;
   try {
@@ -186,7 +206,18 @@ async function zipPieces(name: string, filePath: string, spillDir: string, label
     }
     budget -= bytes.length;
     const innerPath = spill(spillDir, entry.name, bytes);
-    out.push(...(await classifyAttachment({ name: entry.name, filePath: innerPath, spillDir, depth: depth + 1, label: innerLabel })));
+    const stem = name.replace(/\.zip$/i, "");
+    rememberPlaced(placed, [entry.name, `${stem}/${entry.name}`, `${name}/${entry.name}`], innerPath);
+    out.push(
+      ...(await classifyAttachment({
+        name: entry.name,
+        filePath: innerPath,
+        spillDir,
+        depth: depth + 1,
+        label: innerLabel,
+        placed,
+      })),
+    );
   }
   return out;
 }
