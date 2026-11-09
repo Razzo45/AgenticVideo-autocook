@@ -288,20 +288,33 @@ async function ffmpegOut(outPath: string, args: string[]): Promise<void> {
   }
 }
 
+function lookupNamed(ctx: MediaToolContext, name: string): string | undefined {
+  const norm = name.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+  if (!norm) return undefined;
+  const direct = ctx.filesByName?.get(norm);
+  if (direct && fs.existsSync(direct)) return direct;
+  const base = norm.split("/").pop();
+  if (!base) return undefined;
+  const hit = ctx.filesByName?.get(base);
+  if (hit && fs.existsSync(hit)) return hit;
+  return undefined;
+}
+
 function resolveSource(ctx: MediaToolContext, token: string): string {
   const raw = token.trim();
   if (!raw) throw new Error("source required");
   const byId = ctx.staged.get(raw);
   if (byId && fs.existsSync(byId.absPath)) return byId.absPath;
+  const named = lookupNamed(ctx, raw);
+  if (named) return named;
   const base = raw.replace(/\\/g, "/").split("/").pop()?.toLowerCase();
   if (base) {
-    const named = ctx.filesByName?.get(base);
-    if (named && fs.existsSync(named)) return named;
     for (const staged of ctx.staged.values()) {
       const stagedBase = path.basename(staged.filename).toLowerCase();
       if (stagedBase === base && fs.existsSync(staged.absPath)) return staged.absPath;
     }
   }
+  if (path.isAbsolute(raw) && fs.existsSync(raw)) return raw;
   throw new Error(`source not found: ${raw}`);
 }
 
@@ -313,9 +326,7 @@ function namedRefs(args: Record<string, unknown>, ctx: MediaToolContext): string
   }
   const out: string[] = [];
   for (const name of wanted) {
-    const base = name.replace(/\\/g, "/").split("/").pop()?.toLowerCase();
-    if (!base) continue;
-    const hit = ctx.filesByName?.get(base);
+    const hit = lookupNamed(ctx, name);
     if (hit) out.push(hit);
   }
   return out;

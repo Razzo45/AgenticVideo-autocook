@@ -2436,6 +2436,18 @@ export async function retryRun(runId: string): Promise<void> {
     )
     .run("Superseded by scene resume", ts, run.id);
 
+  if (run.pipeline_mode === "task") {
+    await updateRun(run.id, {
+      status: "queued",
+      error: "Resuming the deliverables…",
+      gate: null,
+      script_json: null,
+      current_shot_index: 0,
+    });
+    await enqueueJob(run.id, "argon_execute");
+    return;
+  }
+
   if (isDocRun(run)) {
     await updateRun(run.id, {
       status: "generating",

@@ -77,6 +77,8 @@ export async function brainCompletion(opts: {
   model?: string;
   messages: BrainMessage[];
   json?: boolean;
+  /** Cap the reply. Argon's sync default is 65536; composition needs the full document. */
+  maxOutputTokens?: number;
   /** Operator turn, including attached files. When set, message text parts are not used. */
   userParts?: Part[];
 }): Promise<string> {
@@ -93,6 +95,7 @@ export async function brainCompletion(opts: {
       config: {
         ...(system ? { systemInstruction: system } : {}),
         ...(opts.json ? { responseMimeType: "application/json" } : {}),
+        ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
         // Argon thinking — medium is the API default; keep explicit for autocook planning.
         thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
       },
