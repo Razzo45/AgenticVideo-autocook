@@ -10,10 +10,13 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
@@ -212,11 +215,29 @@ export async function ensureLocalRunFile(runId: string, relPath: string): Promis
   if (storageMode() !== "s3") return abs;
   const out = await s3Client().send(
     new GetObjectCommand({ Bucket: bucket(), Key: `runs/${runId}/${rel}` }),
+    { abortSignal: AbortSignal.timeout(120_000) },
   );
-  const bytes = Buffer.from(await out.Body!.transformToByteArray());
+  if (!out.Body) throw new Error(`Empty bucket object: runs/${runId}/${rel}`);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
-  fs.writeFileSync(abs, bytes);
+  await pipeline(out.Body as Readable, fs.createWriteStream(abs));
   return abs;
+}
+
+/** True when the run file is on local disk or in the bucket. Does not download it. */
+export async function runFileExists(absPath: string): Promise<boolean> {
+  const abs = path.resolve(absPath);
+  if (fs.existsSync(abs) && fs.statSync(abs).size > 0) return true;
+  const parsed = parseRunAbsPath(abs);
+  if (!parsed?.rel || storageMode() !== "s3") return false;
+  try {
+    await s3Client().send(
+      new HeadObjectCommand({ Bucket: bucket(), Key: `runs/${parsed.runId}/${parsed.rel}` }),
+      { abortSignal: AbortSignal.timeout(8_000) },
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

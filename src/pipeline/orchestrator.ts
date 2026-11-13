@@ -87,6 +87,7 @@ import {
   deleteRunPrefix,
   ensureAbsRunFile,
   persistRunFile,
+  runFileExists,
   persistRunTree,
   storageMode,
 } from "./storage";
@@ -2687,35 +2688,42 @@ export async function runDetail(runId: string) {
   const finalWav = path.join(runDir(runId), "final.wav");
   const cleanWav = path.join(runDir(runId), "final_clean.wav");
   const syncedWav = path.join(runDir(runId), "final_synced.wav");
+  const present = new Set<string>();
   for (const p of [stitchReportPath, finalMp4, finalM4a, finalWav, cleanWav, syncedWav]) {
     try {
-      await ensureAbsRunFile(p);
+      if (await runFileExists(p)) present.add(p);
     } catch {
       /* optional artifact */
     }
   }
-  const stitch = fs.existsSync(stitchReportPath)
-    ? JSON.parse(fs.readFileSync(stitchReportPath, "utf8"))
-    : null;
+  let stitch: unknown = null;
+  if (present.has(stitchReportPath)) {
+    try {
+      await ensureAbsRunFile(stitchReportPath);
+      if (fs.existsSync(stitchReportPath)) stitch = JSON.parse(fs.readFileSync(stitchReportPath, "utf8"));
+    } catch {
+      stitch = null;
+    }
+  }
   const finalPath = audio
-    ? fs.existsSync(finalWav)
+    ? present.has(finalWav)
       ? finalWav
-      : fs.existsSync(finalM4a)
+      : present.has(finalM4a)
         ? finalM4a
         : null
     : doc
       ? await resolveDocFinalPath(runId)
       : task
         ? (taskDeliverables[0]?.path ?? null)
-        : fs.existsSync(finalMp4)
+        : present.has(finalMp4)
           ? finalMp4
           : null;
   const audioDeliverables = audio
     ? (
         [
-          fs.existsSync(cleanWav) ? { id: "clean", label: "Clean instrumental", path: cleanWav } : null,
-          fs.existsSync(syncedWav) ? { id: "synced", label: "Synced to monologue", path: syncedWav } : null,
-          !fs.existsSync(cleanWav) && !fs.existsSync(syncedWav) && finalPath
+          present.has(cleanWav) ? { id: "clean", label: "Clean instrumental", path: cleanWav } : null,
+          present.has(syncedWav) ? { id: "synced", label: "Synced to monologue", path: syncedWav } : null,
+          !present.has(cleanWav) && !present.has(syncedWav) && finalPath
             ? { id: "final", label: "Master", path: finalPath }
             : null,
         ] as Array<{ id: string; label: string; path: string } | null>
