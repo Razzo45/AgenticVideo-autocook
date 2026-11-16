@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { runDir } from "./paths";
 import { ensureAbsRunFile, persistRunFile, storageMode } from "./storage";
 
@@ -11,6 +13,8 @@ export type RunInputAsset = {
   filename: string;
   path: string;
   kind: InputAssetKind;
+  /** HTTPS address of the object. The worker downloads it; the cook request does not carry the bytes. */
+  sourceUrl?: string;
   /** Injected into the script step when readable as UTF-8 text. */
   textContent?: string;
   note?: string;
@@ -49,10 +53,56 @@ function readTextIfSmall(filePath: string, maxBytes = 512_000): string | undefin
   }
 }
 
-/** Prefer sourcePath for multi-GB plates — never buffer the whole file in RAM. */
+/** Prefer sourcePath or sourceUrl for multi-GB plates — never buffer the whole file in RAM. */
 export type RunInputFile =
   | { originalName: string; data: Buffer }
-  | { originalName: string; sourcePath: string };
+  | { originalName: string; sourcePath: string }
+  | { originalName: string; sourceUrl: string };
+
+/** Catalog and bucket links are https. Refuse anything that is not a public web address. */
+export function assertPublicDownloadUrl(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    throw new Error("A task file address is not a valid URL.");
+  }
+  if (url.protocol !== "https:") throw new Error("Task files are fetched only over https.");
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    host === "localhost" ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal") ||
+    host === "metadata.google.internal" ||
+    host === "169.254.169.254" ||
+    /^(10\.|127\.|0\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(host)
+  ) {
+    throw new Error("A task file address is not a public storage URL.");
+  }
+  return url.toString();
+}
+
+function noteFor(kind: InputAssetKind, filename: string): { note?: string } {
+  if (kind === "document") return { note: "Document attached — text is extracted before the storyboard." };
+  if (kind === "image") {
+    return {
+      note: isLikelyTitleGraphicAsset(filename)
+        ? "Title/brand graphic — stitch or bookend guidance; not burned into keyframes as filename text."
+        : "Reference still — use for look/identity when the brief calls for it.",
+    };
+  }
+  if (kind === "audio") return { note: "Audio attached — follow the brief for whether it is a bed, SFX, or context-only." };
+  if (kind === "video") {
+    const role = classifyOperatorVideoRole(filename);
+    return {
+      note:
+        role === "intro" || role === "outro"
+          ? `Video role=${role} — bookended in the final stitch; also used as visual guidance.`
+          : "Supplied footage — can be cut into the edit with a shot insert (see its timeline).",
+    };
+  }
+  return {};
+}
 
 export async function saveRunInputs(runId: string, files: RunInputFile[]): Promise<RunInputAsset[]> {
   if (!files.length) return [];
@@ -63,6 +113,12 @@ export async function saveRunInputs(runId: string, files: RunInputFile[]): Promi
     const filename = safeName(file.originalName);
     const id = crypto.randomUUID();
     const abs = path.join(dir, `${id}_${filename}`);
+    if ("sourceUrl" in file) {
+      const sourceUrl = assertPublicDownloadUrl(file.sourceUrl);
+      const kind = kindFor(filename);
+      out.push({ id, filename, path: abs, kind, sourceUrl, ...noteFor(kind, filename) });
+      continue;
+    }
     if ("sourcePath" in file) {
       const src = path.resolve(file.sourcePath);
       if (!fs.existsSync(src) || !fs.statSync(src).isFile()) {
@@ -91,24 +147,8 @@ export async function saveRunInputs(runId: string, files: RunInputFile[]): Promi
     await persistRunFile(abs);
     // In s3 mode the bucket holds the attachment; local copy is optional scratch.
     const kind = kindFor(filename);
-    const asset: RunInputAsset = { id, filename, path: abs, kind };
-    if (kind === "text") {
-      asset.textContent = readTextIfSmall(abs);
-    } else if (kind === "document") {
-      asset.note = "Document attached — text is extracted before the storyboard.";
-    } else if (kind === "image") {
-      asset.note = isLikelyTitleGraphicAsset(filename)
-        ? "Title/brand graphic — stitch or bookend guidance; not burned into keyframes as filename text."
-        : "Reference still — use for look/identity when the brief calls for it.";
-    } else if (kind === "audio") {
-      asset.note = "Audio attached — follow the brief for whether it is a bed, SFX, or context-only.";
-    } else if (kind === "video") {
-      const role = classifyOperatorVideoRole(filename);
-      asset.note =
-        role === "intro" || role === "outro"
-          ? `Video role=${role} — bookended in the final stitch; also used as visual guidance.`
-          : "Supplied footage — can be cut into the edit with a shot insert (see its timeline).";
-    }
+    const asset: RunInputAsset = { id, filename, path: abs, kind, ...noteFor(kind, filename) };
+    if (kind === "text") asset.textContent = readTextIfSmall(abs);
     out.push(asset);
   }
   return out;
@@ -121,27 +161,86 @@ export function parseRunInputs(raw: string | null | undefined): RunInputAsset[] 
     if (!Array.isArray(parsed)) return [];
     // When S3 is configured, paths may exist only on the other container — keep them
     // and hydrate via ensureAbsRunFile / hydrateRunInputs before use.
-    if (storageMode() === "s3") {
-      return parsed.filter((a) => a?.path);
-    }
-    return parsed.filter((a) => a?.path && fs.existsSync(a.path));
+    return parsed.filter((asset) => {
+      if (!asset?.path) return false;
+      if (asset.sourceUrl) return true;
+      if (storageMode() === "s3") return true;
+      return fs.existsSync(asset.path);
+    });
   } catch {
     return [];
   }
 }
 
-/** Pull any missing operator attachments from the bucket onto local disk. */
+async function downloadSource(asset: RunInputAsset): Promise<void> {
+  let current = assertPublicDownloadUrl(asset.sourceUrl || "");
+  let response: Response | null = null;
+  for (let hop = 0; hop < 5; hop++) {
+    const res = await fetch(current, { redirect: "manual", signal: AbortSignal.timeout(30 * 60_000) });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location");
+      await res.body?.cancel().catch(() => undefined);
+      if (!location) throw new Error(`Could not fetch ${asset.filename}: the storage link did not continue.`);
+      current = assertPublicDownloadUrl(new URL(location, current).toString());
+      continue;
+    }
+    response = res;
+    break;
+  }
+  if (!response) throw new Error(`Could not fetch ${asset.filename}: too many redirects.`);
+  if (!response.ok || !response.body) {
+    await response.body?.cancel().catch(() => undefined);
+    const expired = response.status === 401 || response.status === 403;
+    throw new Error(
+      expired
+        ? `The storage link for ${asset.filename} expired before Autocook could fetch it.`
+        : `Could not fetch ${asset.filename} from storage (${response.status}).`,
+    );
+  }
+  fs.mkdirSync(path.dirname(asset.path), { recursive: true });
+  try {
+    const body = Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream);
+    await pipeline(body, fs.createWriteStream(asset.path));
+  } catch (err) {
+    fs.rmSync(asset.path, { force: true });
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+  if (!fs.existsSync(asset.path) || fs.statSync(asset.path).size <= 0) {
+    fs.rmSync(asset.path, { force: true });
+    throw new Error(`Storage returned an empty file for ${asset.filename}.`);
+  }
+  await persistRunFile(asset.path);
+}
+
+function rememberText(asset: RunInputAsset): RunInputAsset {
+  if (asset.kind === "text" && !asset.textContent) {
+    const text = readTextIfSmall(asset.path);
+    if (text) asset.textContent = text;
+  }
+  return asset;
+}
+
+/** Pull missing attachments from the Autocook bucket, or from the storage URL the platform sent. */
 export async function hydrateRunInputs(raw: string | null | undefined): Promise<RunInputAsset[]> {
   const assets = parseRunInputs(raw);
-  if (storageMode() !== "s3") return assets.filter((a) => fs.existsSync(a.path));
   const out: RunInputAsset[] = [];
-  for (const a of assets) {
-    try {
-      await ensureAbsRunFile(a.path);
-      out.push(a);
-    } catch {
-      /* attachment missing in bucket too */
+  for (const asset of assets) {
+    if (fs.existsSync(asset.path) && fs.statSync(asset.path).size > 0) {
+      out.push(rememberText(asset));
+      continue;
     }
+    if (storageMode() === "s3") {
+      try {
+        await ensureAbsRunFile(asset.path);
+        out.push(rememberText(asset));
+        continue;
+      } catch {
+        /* not in the Autocook bucket yet */
+      }
+    }
+    if (!asset.sourceUrl) continue;
+    await downloadSource(asset);
+    out.push(rememberText(asset));
   }
   return out;
 }
