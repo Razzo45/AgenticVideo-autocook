@@ -18,6 +18,7 @@ import {
   type VideoAspect,
   isDocPipelineMode,
 } from "./constants";
+import { brainLabel, modelForBrain } from "./brainChoice";
 import { loadModelsConfig } from "./config";
 import { runDir } from "./paths";
 import { checklistComplete, scriptPlanSchema, type Checklist, type MetaRecord, type ScriptPlan, type ShotTransition } from "./schema";
@@ -324,6 +325,8 @@ export async function createRun(input: {
   autoOptions?: Partial<AutoOptions> | AutoOptions;
   /** GDP-style idempotency key — retries return the same run instead of double-billing. */
   requestId?: string;
+  /** Task tag. Empty stays Argon. Ignored outside pipeline mode task. */
+  brain?: "argon" | "carbon";
   userId?: string;
   tenantId?: string | null;
   createdByKind?: string;
@@ -341,8 +344,8 @@ export async function createRun(input: {
   let outputResolution = normalizeOutputResolution(input.outputResolution);
   if (autoOpts?.deliver4k) outputResolution = "4K";
   // Heuristic auto uses durationBounds (e.g. ~30s min for multi-scene cooks).
-  // Autocook brain is always Argon — ignore UI / OpenRouter script slugs.
-  const scriptModel = BRAIN_MODEL;
+  // Task cooks use the mother-platform tag. Other pipelines stay on Argon.
+  const scriptModel = mode === "task" ? modelForBrain(input.brain ?? "argon") : BRAIN_MODEL;
   const bounds = durationBounds(mode);
   let duration = Math.min(bounds.max, Math.max(bounds.min, input.duration));
   if (mode === "auto" && autoOpts && !autoOpts.longCook) {
@@ -408,7 +411,7 @@ export async function createRun(input: {
   });
   if (mode === "task") {
     await enqueueJob(id, "argon_plan");
-    await updateRun(id, { status: "queued", error: "Argon is reading the task…" });
+    await updateRun(id, { status: "queued", error: `${brainLabel(scriptModel)} is reading the task…` });
   } else if (isDocPipelineMode(mode)) {
     await enqueueJob(id, "doc_cook");
     await updateRun(id, { status: "generating" });

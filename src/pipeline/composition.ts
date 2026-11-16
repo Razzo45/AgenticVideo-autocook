@@ -147,10 +147,14 @@ const KIND_ALIASES: Record<string, CompositionDeliverable["kind"]> = {
   mp3: "audio",
 };
 
-export function composeInstructions(planned: unknown[], attachedNames: string[]): string {
+export function composeInstructions(
+  planned: unknown[],
+  attachedNames: string[],
+  brain: "Argon" | "Carbon" = "Argon",
+): string {
   const plan = planned.length ? JSON.stringify(planned) : "(none — the operator message names the files)";
   const attached = attachedNames.length ? attachedNames.join(", ") : "(none)";
-  return `You are Argon. The operator message and the attached files are the whole job.
+  return `You are ${brain}. The operator message and the attached files are the whole job.
 Reply with one JSON object and nothing else. This reply is the deliverable. Write the copy, the notes, the layout, the HTML, and the SVG here.
 
 {"deliverables":[{"id":"string","filename":"string","kind":"pptx"|"pdf"|"html"|"svg"|"image"|"video"|"audio"}]}
@@ -225,6 +229,7 @@ export async function buildComposition(opts: {
   workDir: string;
   filesByName: Map<string, string>;
   ownerId: string;
+  brainLabel?: "Argon" | "Carbon";
   onStatus?: (msg: string) => void;
 }): Promise<BuiltFile[]> {
   const stagingDir = path.join(opts.workDir, "compose_media");
@@ -236,6 +241,7 @@ export async function buildComposition(opts: {
     staged: new Map(),
     filesByName: opts.filesByName,
     namedReferencesOnly: true,
+    brainLabel: opts.brainLabel,
     onStatus: opts.onStatus,
   };
   const cache = new Map<string, Promise<string>>();

@@ -225,7 +225,14 @@ export type MediaToolContext = {
   /** When true, attach only the files Argon names. Do not add the rest. */
   namedReferencesOnly?: boolean;
   onStatus?: (msg: string) => void;
+  /** Name used on the live status line. */
+  brainLabel?: "Argon" | "Carbon";
 };
+
+function toolStatus(ctx: MediaToolContext, detail: string): string {
+  const who = ctx.brainLabel === "Carbon" ? "Carbon" : "Argon";
+  return `${who} tool ${detail}`;
+}
 
 function remember(ctx: MediaToolContext, staged: StagedMedia): void {
   ctx.staged.set(staged.id, staged);
@@ -346,7 +353,7 @@ export async function executeArgonMediaTool(
     const prompt = String(args.prompt ?? "").trim();
     if (!prompt) throw new Error("generate_image: prompt required");
     const embed = String(args.embed ?? "path") === "data_uri" ? "data_uri" : "path";
-    ctx.onStatus?.(`Argon tool generate_image (${id})…`);
+    ctx.onStatus?.(toolStatus(ctx, `generate_image (${id})…`));
     const buf = await generatePngBytes(prompt, namedRefs(args, ctx).filter((p) => /\.(png|jpe?g|webp)$/i.test(p)));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
@@ -393,7 +400,7 @@ export async function executeArgonMediaTool(
     const height = positiveInt(args.height, "height", 8000);
     const fit = fitMode(args.fit);
     const source = resolveSource(ctx, String(args.source ?? args.source_id ?? ""));
-    ctx.onStatus?.(`Argon tool fit_image (${id}, ${width}x${height} ${fit})…`);
+    ctx.onStatus?.(toolStatus(ctx, `fit_image (${id}, ${width}x${height} ${fit})…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     await ffmpegOut(absPath, [
@@ -432,7 +439,7 @@ export async function executeArgonMediaTool(
     const svg = String(args.svg ?? "").trim();
     if (!svg) throw new Error("write_svg: svg required");
     const embed = String(args.embed ?? "path") === "data_uri" ? "data_uri" : "path";
-    ctx.onStatus?.(`Argon tool write_svg (${id})…`);
+    ctx.onStatus?.(toolStatus(ctx, `write_svg (${id})…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     fs.writeFileSync(absPath, svg, "utf8");
@@ -465,7 +472,7 @@ export async function executeArgonMediaTool(
     const duration = Math.min(10, Math.max(3, Number.isFinite(askedDuration) && askedDuration > 0 ? askedDuration : 5));
     const askedAspect = String(args.aspect ?? "16:9");
     const aspect = askedAspect === "9:16" ? "9:16" : "16:9";
-    ctx.onStatus?.(`Argon tool generate_video (${id}, ${duration}s)…`);
+    ctx.onStatus?.(toolStatus(ctx, `generate_video (${id}, ${duration}s)…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     await generateOmniVideo({
@@ -532,7 +539,7 @@ export async function executeArgonMediaTool(
     if (duration != null && (!Number.isFinite(duration) || duration <= 0 || duration > 600)) {
       throw new Error("duration_sec must be between 0 and 600");
     }
-    ctx.onStatus?.(`Argon tool fit_video (${id}, ${outW}x${outH})…`);
+    ctx.onStatus?.(toolStatus(ctx, `fit_video (${id}, ${outW}x${outH})…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     const sourceDur = probedIn.duration ?? 0;
@@ -576,7 +583,7 @@ export async function executeArgonMediaTool(
     const outH = evenPixels(first.height || 720);
     const probes = await Promise.all(sources.map((src) => probeFile(src)));
     const withAudio = probes.every((probe) => probe.hasAudio);
-    ctx.onStatus?.(`Argon tool join_videos (${id}, ${clips.length} clips)…`);
+    ctx.onStatus?.(toolStatus(ctx, `join_videos (${id}, ${clips.length} clips)…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     const chains = sources.map((_, index) => {
