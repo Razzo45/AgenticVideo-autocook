@@ -25,6 +25,7 @@ export async function POST(req: Request) {
     let sessionLabel: string | undefined;
     let category: Category = CATEGORIES[1] ?? CATEGORIES[0];
     let requestId: string | undefined;
+    let sources: { name?: string; url?: string }[] = [];
 
     if (ct.includes("multipart/form-data")) {
       const form = await req.formData();
@@ -67,7 +68,9 @@ export async function POST(req: Request) {
         sessionLabel?: string;
         category?: string;
         requestId?: string;
+        sources?: { name?: string; url?: string }[];
       };
+      sources = Array.isArray(body.sources) ? body.sources : [];
       prompt = String(body.prompt ?? "").trim();
       sessionLabel = body.sessionLabel?.trim() || undefined;
       requestId = body.requestId?.trim() || undefined;
@@ -87,6 +90,12 @@ export async function POST(req: Request) {
       sessionLabel,
       requestId,
       outputResolution: normalizeOutputResolution("1080p"),
+      inputFiles: sources.length
+        ? sources.map((source) => ({
+            originalName: String(source.name ?? "").trim() || "input.bin",
+            sourceUrl: String(source.url ?? "").trim(),
+          }))
+        : undefined,
       userId: user.userId,
       tenantId: user.tenantId,
       createdByKind: user.kind,
@@ -102,6 +111,8 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     if (isAuthError(err)) return fail("unauthorized", 401);
-    return fail(err instanceof Error ? err.message : String(err), 500);
+    const message = err instanceof Error ? err.message : String(err);
+    if (/task file address/i.test(message)) return fail(message, 400);
+    return fail(message, 500);
   }
 }

@@ -94,8 +94,9 @@ async function operatorParts(run: RunRow): Promise<{ parts: Part[]; placed: Map<
 export async function jobArgonPlan(run: RunRow): Promise<void> {
   const dir = runDir(run.id);
   fs.mkdirSync(dir, { recursive: true });
-  await updateRun(run.id, { status: "generating", gate: null, error: "Argon is reading the task…" });
+  await updateRun(run.id, { status: "generating", gate: null, error: "Argon is fetching the task files…" });
   const { parts: userParts } = await operatorParts(run);
+  await updateRun(run.id, { status: "generating", gate: null, error: "Argon is reading the task…" });
   const text = await brainCompletion({
     model: BRAIN_MODEL,
     messages: [{ role: "system", content: PLAN_SYSTEM }],
