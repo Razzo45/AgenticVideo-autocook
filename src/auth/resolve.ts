@@ -76,6 +76,21 @@ export async function resolveAuthUser(req: Request): Promise<AuthUser | null> {
   return null;
 }
 
+/**
+ * Operator read of the shared queue. The service token is enough.
+ * Cook routes still need X-User-Id through requireUser.
+ * Local dev with no token configured stays open so the local queue can be read.
+ */
+export function requireOperator(req: Request): void {
+  const token = bearer(req);
+  const expected = serviceToken();
+  if (token && expected && timingSafeStringEq(token, expected)) return;
+  if (authMode() === "dev" && !expected) return;
+  const err = new Error("unauthorized");
+  (err as Error & { status: number }).status = 401;
+  throw err;
+}
+
 export async function requireUser(req: Request): Promise<AuthUser> {
   const user = await resolveAuthUser(req);
   if (!user) {

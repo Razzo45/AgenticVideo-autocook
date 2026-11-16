@@ -13,7 +13,8 @@
     "test": "node tests/run-all.mjs all",
     "test:unit": "node tests/run-all.mjs unit",
     "test:integration": "node tests/run-all.mjs integration",
-    "test:e2e": "node tests/run-all.mjs e2e"
+    "test:e2e": "node tests/run-all.mjs e2e",
+    "queue": "tsx scripts/queue-status.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1162.0",

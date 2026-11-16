@@ -73,6 +73,18 @@ Argon lists three images: weight 30. Argon lists one video and two images: weigh
 
 The cook response has `stage: "plan"` and `taskWeight: null` until that plan exists. The run ticker then shows the weight.
 
+## Queue inspection
+
+`GET /api/queue` returns job counts, run counts, and one row per pending or running job. A queued or generating run with no job is included so a stale status line is visible. The body has `lines` for grep. Prompts and file addresses are omitted.
+
+Authorization is `Authorization: Bearer <AUTOCOOK_SERVICE_TOKEN>`. No `X-User-Id`. Local `AUTH_MODE=dev` with no token configured can read the local queue.
+
+```bash
+npm run queue
+npm run queue -- run_e5a063de
+npm run queue -- --local
+```
+
 ## Ownership
 
 Every run stores `user_id`, `tenant_id`, and `created_by_kind`. `created_by_kind` is who signed in: `service`, `launch`, or `dev`. It is not a deliverable. List/get/delete/actions are scoped to the authenticated user. Workers claim jobs without cookies (queue is shared; ACL is on user-facing reads).

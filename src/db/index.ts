@@ -7,6 +7,7 @@ import {
   LANE_DEFAULT,
 } from "../pipeline/jobLanes";
 import { scheduleForJob } from "../pipeline/taskWeight";
+import { clipStatusLine, type QueueSnapshot, type QueueTask } from "../pipeline/queueStatus";
 import type { AssetRow, JobRow, ReviewRow, RunRow, VariantRow } from "./types";
 import * as pg from "./pgBackend";
 
@@ -294,6 +295,67 @@ export async function countRunsByStatus(userId?: string): Promise<Record<string,
   const out: Record<string, number> = {};
   for (const r of rows) out[r.status] = Number(r.n);
   return out;
+}
+
+function tally(rows: Array<{ status: string; n: number }>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const row of rows) out[row.status] = Number(row.n);
+  return out;
+}
+
+/** Pending and running jobs, plus queued/generating runs that have no job. */
+export async function queueSnapshot(): Promise<QueueSnapshot> {
+  if (usePg()) return pg.pgQueueSnapshot();
+  const database = getDb();
+  const jobs = tally(
+    database.prepare("SELECT status, COUNT(*) AS n FROM jobs GROUP BY status").all() as Array<{ status: string; n: number }>,
+  );
+  const runs = tally(
+    database.prepare("SELECT status, COUNT(*) AS n FROM runs GROUP BY status").all() as Array<{ status: string; n: number }>,
+  );
+  const active = database
+    .prepare(
+      `SELECT j.run_id AS run_id, j.type AS job_type, j.status AS job_status,
+              COALESCE(j.task_weight, 10) AS task_weight, j.updated_at AS updated_at,
+              r.status AS run_status, r.error AS error, r.pipeline_mode AS pipeline_mode,
+              r.session_id AS session_id
+       FROM jobs j JOIN runs r ON r.id = j.run_id
+       WHERE j.status IN ('pending', 'running')
+       ORDER BY j.created_at ASC`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  const orphans = database
+    .prepare(
+      `SELECT r.id AS run_id, r.status AS run_status, r.error AS error,
+              r.pipeline_mode AS pipeline_mode, r.session_id AS session_id, r.updated_at AS updated_at
+       FROM runs r
+       WHERE r.status IN ('queued', 'generating')
+         AND NOT EXISTS (
+           SELECT 1 FROM jobs j WHERE j.run_id = r.id AND j.status IN ('pending', 'running')
+         )
+       ORDER BY r.updated_at DESC
+       LIMIT 40`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  const tasks: QueueTask[] = [
+    ...active.map((row) => taskFromRow(row, true)),
+    ...orphans.map((row) => taskFromRow(row, false)),
+  ];
+  return { at: nowIso(), jobs, runs, tasks };
+}
+
+function taskFromRow(row: Record<string, unknown>, withJob: boolean): QueueTask {
+  return {
+    runId: String(row.run_id),
+    sessionId: clipStatusLine(row.session_id == null ? "" : String(row.session_id), 80),
+    pipelineMode: String(row.pipeline_mode ?? ""),
+    runStatus: String(row.run_status ?? ""),
+    jobType: withJob ? String(row.job_type ?? "") : null,
+    jobStatus: withJob ? String(row.job_status ?? "") : null,
+    taskWeight: withJob ? Number(row.task_weight ?? 10) : null,
+    updatedAt: String(row.updated_at ?? ""),
+    line: clipStatusLine(row.error == null ? "" : String(row.error)),
+  };
 }
 
 export async function setRunInputAssets(id: string, inputAssetsJson: string): Promise<void> {
