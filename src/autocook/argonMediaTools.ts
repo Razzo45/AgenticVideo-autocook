@@ -278,8 +278,16 @@ async function ffmpeg(args: string[]): Promise<void> {
       windowsHide: true,
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`ffmpeg failed: ${msg.slice(0, 500)}`);
+    const execErr = err as { message?: string; stderr?: string | Buffer };
+    const stderr = typeof execErr.stderr === "string" ? execErr.stderr : execErr.stderr?.toString?.() ?? "";
+    const tail = stderr
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(-8)
+      .join(" | ");
+    const msg = execErr.message ?? String(err);
+    throw new Error(`ffmpeg failed: ${(tail || msg).slice(0, 800)}`);
   }
 }
 
@@ -578,17 +586,21 @@ export async function executeArgonMediaTool(
     const clips = Array.isArray(args.clips) ? args.clips.map((clip) => String(clip)) : [];
     if (clips.length < 2 || clips.length > 12) throw new Error("join_videos needs 2–12 clips");
     const sources = clips.map((clip) => resolveSource(ctx, clip));
-    const first = await probeFile(sources[0]);
+    const first = await probeFile(sources[0]!);
     const outW = evenPixels(first.width || 1280);
     const outH = evenPixels(first.height || 720);
+    // Normalize fps — concat fails when Omni (often 24) meets plate footage (often 25).
+    const fps = first.fps && first.fps > 0 ? Math.round(first.fps * 1000) / 1000 : 24;
     const probes = await Promise.all(sources.map((src) => probeFile(src)));
     const withAudio = probes.every((probe) => probe.hasAudio);
     ctx.onStatus?.(toolStatus(ctx, `join_videos (${id}, ${clips.length} clips)…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     const chains = sources.map((_, index) => {
-      const video = `[${index}:v]scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2:color=0x000000,setsar=1[v${index}]`;
-      const audio = withAudio ? `;[${index}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a${index}]` : "";
+      const video = `[${index}:v]fps=${fps},scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2:color=0x000000,setsar=1,format=yuv420p[v${index}]`;
+      const audio = withAudio
+        ? `;[${index}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a${index}]`
+        : "";
       return video + audio;
     });
     const vLabels = sources.map((_, index) => `[v${index}]`).join("");
@@ -599,14 +611,16 @@ export async function executeArgonMediaTool(
     await ffmpegOut(absPath, [
       ...sources.flatMap((src) => ["-i", src]),
       "-filter_complex",
-      `${chains.join(";")} ; ${concat}`,
+      `${chains.join(";")};${concat}`,
       "-map",
       "[v]",
-      ...(withAudio ? ["-map", "[a]", "-c:a", "aac"] : ["-an"]),
+      ...(withAudio ? ["-map", "[a]", "-c:a", "aac", "-ar", "48000", "-ac", "2"] : ["-an"]),
       "-c:v",
       "libx264",
       "-pix_fmt",
       "yuv420p",
+      "-r",
+      String(fps),
     ]);
     const probed = await probeFile(absPath);
     remember(ctx, { id, format: "mp4", filename, absPath, embed: "path", mime: "video/mp4" });
