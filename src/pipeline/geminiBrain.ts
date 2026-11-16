@@ -4,7 +4,9 @@
  * Document cooks may use brainWithTools (image/video/SVG) like gemini.google.com.
  */
 import fs from "node:fs";
+import path from "node:path";
 import {
+  FunctionCallingConfigMode,
   GoogleGenAI,
   ThinkingLevel,
   type Content,
@@ -151,14 +153,16 @@ export async function brainWithTools(opts: {
 }): Promise<string> {
   const ai = brainClient();
   const model = opts.model?.trim() || BRAIN_MODEL;
-  const maxRounds = opts.maxRounds ?? 10;
+  const label = brainLabel(model);
+  const maxRounds = opts.maxRounds ?? 16;
 
   const contents: Content[] = [
     { role: "user", parts: opts.userParts?.length ? opts.userParts : [{ text: opts.user }] },
   ];
+  let emptyStreak = 0;
 
   for (let round = 0; round < maxRounds; round++) {
-    opts.onStatus?.(`${brainLabel(model)} tool round ${round + 1}/${maxRounds}…`);
+    opts.onStatus?.(`${label} tool round ${round + 1}/${maxRounds}…`);
     const result = await withGeminiAdmission(
       "argon",
       () =>
@@ -189,10 +193,23 @@ export async function brainWithTools(opts: {
 
     if (!calls.length) {
       const text = (result.text ?? "").trim();
-      if (!text) throw new Error(`${brainLabel(model)} brain (${model}) returned no content after tools`);
-      return text;
+      if (text) return text;
+      emptyStreak += 1;
+      if (emptyStreak >= 3) {
+        throw new Error(`${label} brain (${model}) returned no content after tools`);
+      }
+      contents.push({
+        role: "user",
+        parts: [
+          {
+            text: "Your previous reply was empty. Call write_svg if a mark is large, or reply with the JSON object only. Do not return an empty message.",
+          },
+        ],
+      });
+      continue;
     }
 
+    emptyStreak = 0;
     contents.push({ role: "model", parts: modelParts });
 
     const responseParts: Part[] = [];
@@ -220,5 +237,196 @@ export async function brainWithTools(opts: {
     contents.push({ role: "user", parts: responseParts });
   }
 
-  throw new Error(`${brainLabel(model)} tool loop exceeded ${maxRounds} rounds without a final plan`);
+  throw new Error(`${label} tool loop exceeded ${maxRounds} rounds without a final plan`);
+}
+
+export type GuidedSvgTarget = { id: string; filename: string; note?: string };
+
+function writeSvgMatchesTarget(
+  args: Record<string, unknown>,
+  target: GuidedSvgTarget,
+): boolean {
+  const id = String(args.id ?? "").trim();
+  const filename = String(args.filename ?? "").trim();
+  return (
+    id === target.id ||
+    filename === target.filename ||
+    filename.endsWith(target.filename) ||
+    path.basename(filename) === path.basename(target.filename)
+  );
+}
+
+/**
+ * One session for multi-SVG tasks: write_svg one file per turn (forced tool), then thin JSON.
+ * Avoids asking the brain for several outlined logos in a single completion.
+ */
+export async function brainGuidedWriteSvgThenJson(opts: {
+  model?: string;
+  system: string;
+  userParts: Part[];
+  svgTargets: GuidedSvgTarget[];
+  tools: FunctionDeclaration[];
+  onTool: BrainToolHandler;
+  onStatus?: (msg: string) => void;
+  perSvgAttempts?: number;
+}): Promise<string> {
+  const ai = brainClient();
+  const model = opts.model?.trim() || BRAIN_MODEL;
+  const label = brainLabel(model);
+  const perSvgAttempts = opts.perSvgAttempts ?? 4;
+  const writeSvgTools = opts.tools.filter((tool) => tool.name === "write_svg");
+  if (!writeSvgTools.length) throw new Error("brainGuidedWriteSvgThenJson requires write_svg");
+
+  const contents: Content[] = [{ role: "user", parts: opts.userParts }];
+  const system = `${opts.system}
+
+Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all marks in one reply. After every mark is staged, you will return thin JSON with empty svg bodies.`;
+
+  for (let i = 0; i < opts.svgTargets.length; i++) {
+    const target = opts.svgTargets[i]!;
+    const note = target.note?.trim() ? ` Note: ${target.note.trim()}` : "";
+    contents.push({
+      role: "user",
+      parts: [
+        {
+          text: `Call write_svg exactly once for id="${target.id}" filename="${target.filename}".${note} Put the FULL SVG document in the tool arguments. Do not return the final JSON yet. Only this one file (${i + 1}/${opts.svgTargets.length}).`,
+        },
+      ],
+    });
+
+    let landed = false;
+    for (let attempt = 0; attempt < perSvgAttempts; attempt++) {
+      opts.onStatus?.(
+        `${label} write_svg ${i + 1}/${opts.svgTargets.length} (${target.filename})…`,
+      );
+      const result = await withGeminiAdmission(
+        "argon",
+        () =>
+          ai.models.generateContent({
+            model,
+            contents,
+            config: {
+              systemInstruction: system,
+              tools: [{ functionDeclarations: writeSvgTools }],
+              toolConfig: {
+                functionCallingConfig: {
+                  mode: FunctionCallingConfigMode.ANY,
+                  allowedFunctionNames: ["write_svg"],
+                },
+              },
+              thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            },
+          }),
+        { onStatus: opts.onStatus },
+      );
+
+      const calls = result.functionCalls ?? [];
+      const modelParts: Part[] = [];
+      const candidateParts = result.candidates?.[0]?.content?.parts ?? [];
+      if (candidateParts.length) {
+        for (const p of candidateParts) modelParts.push(p as Part);
+      } else if (calls.length) {
+        for (const fc of calls) {
+          modelParts.push({
+            functionCall: { name: fc.name, args: fc.args ?? {}, id: fc.id },
+          } as Part);
+        }
+      }
+
+      if (!calls.length) {
+        contents.push({
+          role: "user",
+          parts: [
+            {
+              text: `Empty reply. Call write_svg once for id="${target.id}" filename="${target.filename}" with the full SVG markup.`,
+            },
+          ],
+        });
+        continue;
+      }
+
+      contents.push({ role: "model", parts: modelParts.length ? modelParts : candidateParts });
+      const responseParts: Part[] = [];
+      for (const fc of calls) {
+        const name = fc.name ?? "";
+        const args = (fc.args ?? {}) as Record<string, unknown>;
+        opts.onStatus?.(`Executing tool ${name}…`);
+        let response: Record<string, unknown>;
+        try {
+          response = await opts.onTool(name, args);
+        } catch (err) {
+          response = { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+        responseParts.push({
+          functionResponse: { name, id: fc.id, response },
+        } as Part);
+      }
+      contents.push({ role: "user", parts: responseParts });
+
+      const wroteTarget = calls.some(
+        (fc) => fc.name === "write_svg" && writeSvgMatchesTarget((fc.args ?? {}) as Record<string, unknown>, target),
+      );
+      if (wroteTarget) {
+        landed = true;
+        break;
+      }
+      contents.push({
+        role: "user",
+        parts: [
+          {
+            text: `That write_svg was not for id="${target.id}" / "${target.filename}". Call write_svg once for that exact id and filename.`,
+          },
+        ],
+      });
+    }
+    if (!landed) {
+      throw new Error(`${label} did not write_svg for ${target.filename} after ${perSvgAttempts} attempts`);
+    }
+  }
+
+  contents.push({
+    role: "user",
+    parts: [
+      {
+        text: `All SVG marks are staged via write_svg. Reply with the JSON object only — one deliverable per planned file, kind "svg", matching ids and filenames, omit "svg" (or leave it empty). No more tool calls.`,
+      },
+    ],
+  });
+
+  let emptyStreak = 0;
+  for (let round = 0; round < 4; round++) {
+    opts.onStatus?.(`${label} composing thin SVG JSON…`);
+    const result = await withGeminiAdmission(
+      "argon",
+      () =>
+        ai.models.generateContent({
+          model,
+          contents,
+          config: {
+            systemInstruction: system,
+            tools: [{ functionDeclarations: writeSvgTools }],
+            toolConfig: {
+              functionCallingConfig: { mode: FunctionCallingConfigMode.NONE },
+            },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+          },
+        }),
+      { onStatus: opts.onStatus },
+    );
+    const text = (result.text ?? "").trim();
+    if (text) return text;
+    emptyStreak += 1;
+    if (emptyStreak >= 3) {
+      throw new Error(`${label} returned no JSON after staged SVGs`);
+    }
+    contents.push({
+      role: "user",
+      parts: [
+        {
+          text: "Your previous reply was empty. Reply with the JSON object only (thin svg deliverables, no tool calls).",
+        },
+      ],
+    });
+  }
+  throw new Error(`${label} guided SVG session ended without JSON`);
 }

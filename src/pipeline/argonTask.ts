@@ -5,7 +5,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Part } from "@google/genai";
-import { brainCompletion } from "./geminiBrain";
+import {
+  ARGON_MEDIA_TOOL_DECLARATIONS,
+  executeArgonMediaTool,
+  type MediaToolContext,
+} from "../autocook/argonMediaTools";
+import {
+  brainCompletion,
+  brainGuidedWriteSvgThenJson,
+  brainWithTools,
+  type GuidedSvgTarget,
+} from "./geminiBrain";
 import { BRAIN_MODEL } from "./constants";
 import { brainLabel } from "./brainChoice";
 import { hydrateRunInputs } from "./inputs";
@@ -16,6 +26,27 @@ import { ensureAbsRunFile, persistRunFile } from "./storage";
 import { weightFromDeliverables, type PlannedDeliverable } from "./taskWeight";
 import { buildComposition, composeInstructions, parseComposition } from "./composition";
 import { enqueueJob, updateRun, upsertAsset, type RunRow } from "../db";
+
+/** Optional in-session tools for large SVG (and similar) payloads — model may ignore them. */
+const TASK_OPTIONAL_TOOLS = ARGON_MEDIA_TOOL_DECLARATIONS.filter((tool) => tool.name === "write_svg");
+
+/** Planned SVG files with stable ids/filenames for guided write_svg. */
+export function plannedSvgTargets(items: PlannedDeliverable[]): GuidedSvgTarget[] {
+  const out: GuidedSvgTarget[] = [];
+  for (const [index, item] of items.entries()) {
+    const kind = String(item.deliverable ?? "").trim().toLowerCase();
+    if (kind !== "svg") continue;
+    const filename = String(item.filename ?? "").trim() || `mark_${index + 1}.svg`;
+    const id =
+      String(item.id ?? "").trim() || path.basename(filename, path.extname(filename)) || `svg_${index + 1}`;
+    out.push({
+      id,
+      filename,
+      note: String(item.note ?? "").trim() || undefined,
+    });
+  }
+  return out;
+}
 
 export function planSystem(label: "Argon" | "Carbon"): string {
   return `You are ${label}. Read the operator message and the attached files.
@@ -104,7 +135,24 @@ async function operatorParts(run: RunRow): Promise<{ parts: Part[]; placed: Map<
   return { parts: userParts, placed };
 }
 
-/** Text step. Argon names the files. That list is the generation queue weight. */
+function collectStagedSvg(
+  toolCtx: MediaToolContext,
+  filesByName: Map<string, string>,
+): Map<string, string> {
+  const stagedSvg = new Map<string, string>();
+  for (const staged of toolCtx.staged.values()) {
+    if (staged.format !== "svg" || !fs.existsSync(staged.absPath)) continue;
+    const markup = fs.readFileSync(staged.absPath, "utf8");
+    stagedSvg.set(staged.id, markup);
+    stagedSvg.set(staged.filename, markup);
+    stagedSvg.set(path.basename(staged.filename), markup);
+    stagedSvg.set(path.basename(staged.filename).toLowerCase(), markup);
+    filesByName.set(path.basename(staged.filename).toLowerCase(), staged.absPath);
+  }
+  return stagedSvg;
+}
+
+/** Plan step. Argon names the files. That list is the generation queue weight. */
 export async function jobArgonPlan(run: RunRow): Promise<void> {
   const dir = runDir(run.id);
   fs.mkdirSync(dir, { recursive: true });
@@ -150,29 +198,75 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
   const plan = await loadArgonPlan(run.id);
   const system = composeInstructions(plan?.deliverables ?? [], [...filesByName.keys()].sort(), label);
   await updateRun(run.id, { status: "generating", gate: null, error: `${label} is writing the deliverables…` });
-  let text = await brainCompletion({
-    model,
-    messages: [{ role: "system", content: system }],
-    userParts,
-    json: true,
-    maxOutputTokens: 65536,
-  });
+
+  const stagingDir = path.join(dir, "compose_media");
+  fs.mkdirSync(stagingDir, { recursive: true });
+  const toolCtx: MediaToolContext = {
+    stagingDir,
+    staged: new Map(),
+    filesByName,
+    namedReferencesOnly: true,
+    brainLabel: label,
+    onStatus: (msg) => {
+      void updateRun(run.id, { error: msg, status: "generating" });
+    },
+  };
+
+  const svgTargets = plannedSvgTargets(plan?.deliverables ?? []);
+  const onBrainStatus = (msg: string) => {
+    void updateRun(run.id, { error: msg, status: "generating" });
+  };
+  const onBrainTool = (name: string, args: Record<string, unknown>) =>
+    executeArgonMediaTool(name, args, toolCtx);
+
+  // Multi-SVG: one write_svg per turn in the same session, then thin JSON.
+  // Free-form optional tools for ordinary / single-SVG tasks.
+  let text: string;
+  if (svgTargets.length >= 2) {
+    text = await brainGuidedWriteSvgThenJson({
+      model,
+      system,
+      userParts,
+      svgTargets,
+      tools: TASK_OPTIONAL_TOOLS,
+      onStatus: onBrainStatus,
+      onTool: onBrainTool,
+    });
+  } else {
+    text = await brainWithTools({
+      model,
+      system,
+      user: run.initial_prompt,
+      userParts,
+      tools: TASK_OPTIONAL_TOOLS,
+      maxRounds: 16,
+      onStatus: onBrainStatus,
+      onTool: onBrainTool,
+    });
+  }
+
+  let stagedSvg = collectStagedSvg(toolCtx, filesByName);
+
   let composition;
   try {
-    composition = parseComposition(text);
+    composition = parseComposition(text, { stagedSvg });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    text = await brainCompletion({
+    text = await brainWithTools({
       model,
-      messages: [{ role: "system", content: system }],
+      system: `${system}\n\nThe previous reply could not be built (${message}). Reply with the JSON object only. You may call write_svg again if needed.`,
+      user: run.initial_prompt,
       userParts: [
         ...userParts,
         { text: `The previous reply could not be built (${message}). Reply with the JSON object only.` },
       ],
-      json: true,
-      maxOutputTokens: 65536,
+      tools: TASK_OPTIONAL_TOOLS,
+      maxRounds: 16,
+      onStatus: onBrainStatus,
+      onTool: onBrainTool,
     });
-    composition = parseComposition(text);
+    stagedSvg = collectStagedSvg(toolCtx, filesByName);
+    composition = parseComposition(text, { stagedSvg });
   }
   const compositionPath = path.join(dir, "argon_composition.json");
   fs.writeFileSync(compositionPath, JSON.stringify(composition, null, 2));
