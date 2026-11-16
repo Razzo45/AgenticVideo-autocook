@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { plannedSvgTargets } from "../../src/pipeline/argonTask";
 import { composeInstructions, parseComposition } from "../../src/pipeline/composition";
 
 describe("composition parse", () => {
@@ -13,6 +14,32 @@ describe("composition parse", () => {
     }
     assert.match(text, /brand\/logo\.png/);
     assert.match(text, /Deck\.pptx/);
+    assert.match(text, /write_svg/);
+    assert.match(text, /one write_svg per turn/);
+  });
+
+  it("lists planned SVG targets for guided write_svg", () => {
+    const targets = plannedSvgTargets([
+      { deliverable: "svg", id: "a", filename: "A.svg", note: "primary" },
+      { deliverable: "pdf", id: "skip", filename: "x.pdf" },
+      { deliverable: "svg", filename: "B.svg" },
+    ]);
+    assert.deepEqual(
+      targets.map((t) => ({ id: t.id, filename: t.filename })),
+      [
+        { id: "a", filename: "A.svg" },
+        { id: "B", filename: "B.svg" },
+      ],
+    );
+  });
+
+  it("fills empty svg bodies from staged write_svg files", () => {
+    const staged = new Map([["mark", '<svg xmlns="http://www.w3.org/2000/svg"/>']]);
+    const composition = parseComposition(
+      JSON.stringify({ deliverables: [{ kind: "svg", id: "mark", filename: "Mark.svg" }] }),
+      { stagedSvg: staged },
+    );
+    assert.match(composition.deliverables[0]?.svg ?? "", /<svg/);
   });
 
   it("reads a fenced reply and aliases", () => {

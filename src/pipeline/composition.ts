@@ -177,6 +177,7 @@ HTML prints in the browser. "from" a pptx prints only where LibreOffice is insta
 kind "html" — "entry" and "files":[{"path":"index.html","content":"the file"}] plus "assets" as above. {{asset:id}} in the file contents. File contents are written as you wrote them, apart from those tokens.
 
 kind "svg" — "svg" is the full document.
+Optional tool write_svg: when a mark is large (outlined logos, many paths), call write_svg once per file with the full markup, then in this JSON use the same id and filename and omit "svg" (or leave it empty). Small SVGs may still be inlined here. Tools are optional — ordinary tasks can reply with JSON only and never call them. When several large SVGs are planned, prefer one write_svg per turn (not all marks in one reply), then thin JSON.
 
 kind "image" — "source" is place, generate, or svg.
 
@@ -199,7 +200,31 @@ Attached filenames you can place:
 ${attached}`;
 }
 
-export function parseComposition(text: string): Composition {
+/**
+ * Fill empty kind:"svg" bodies from files the brain already wrote with write_svg
+ * (same id or filename). Keeps one-shot JSON for small marks; tools for large ones.
+ */
+export function hydrateSvgFromStaged(
+  composition: Composition,
+  stagedSvg: Map<string, string>,
+): Composition {
+  if (!stagedSvg.size) return composition;
+  return {
+    ...composition,
+    deliverables: composition.deliverables.map((item) => {
+      if (item.kind !== "svg" || item.svg?.trim()) return item;
+      const byId = stagedSvg.get(item.id);
+      const byFile = stagedSvg.get(item.filename) ?? stagedSvg.get(item.filename.toLowerCase());
+      const svg = (byId ?? byFile ?? "").trim();
+      return svg ? { ...item, svg } : item;
+    }),
+  };
+}
+
+export function parseComposition(
+  text: string,
+  opts?: { stagedSvg?: Map<string, string> },
+): Composition {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const rawText = fenced ? fenced[1]! : text;
   const start = rawText.indexOf("{");
@@ -220,8 +245,9 @@ export function parseComposition(text: string): Composition {
       .join("; ");
     throw new Error(`Deliverable JSON did not match the file shape: ${issue}`);
   }
-  assertBuildable(parsed.data);
-  return parsed.data;
+  const data = opts?.stagedSvg?.size ? hydrateSvgFromStaged(parsed.data, opts.stagedSvg) : parsed.data;
+  assertBuildable(data);
+  return data;
 }
 
 export async function buildComposition(opts: {
