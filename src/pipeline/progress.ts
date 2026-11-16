@@ -1,4 +1,5 @@
 import type { Gate, RunStatus } from "./constants";
+import { brainLabel } from "./brainChoice";
 
 export type LiveKind = "work" | "need_you" | "done" | "fail" | "idle";
 
@@ -85,7 +86,8 @@ export function liveStatus(run: RunLite): LiveStatus {
       };
     }
     if (mode === "task") {
-      return { kind: "work", text: ticker || "Argon is making the deliverables…" };
+      const who = brainLabel((run as RunLite & { script_model?: string | null }).script_model);
+      return { kind: "work", text: ticker || `${who} is making the deliverables…` };
     }
     if (!run.script_json) {
       const direct = mode === "direct";

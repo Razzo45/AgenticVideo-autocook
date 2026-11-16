@@ -1,5 +1,6 @@
 import { fail, ok } from "@/src/api";
 import { isAuthError, requireUser } from "@/src/auth/resolve";
+import { cookBrainFromInput, type CookBrain } from "@/src/pipeline/brainChoice";
 import { CATEGORIES, normalizeOutputResolution, type Category, type VideoAspect } from "@/src/pipeline/constants";
 import { ensureRailwaySchema } from "@/src/pipeline/ensureSchema";
 import { takeMultipartInputs } from "@/src/pipeline/multipartInputs";
@@ -25,6 +26,7 @@ export async function POST(req: Request) {
     let sessionLabel: string | undefined;
     let category: Category = CATEGORIES[1] ?? CATEGORIES[0];
     let requestId: string | undefined;
+    let brain: CookBrain = "argon";
     let sources: { name?: string; url?: string }[] = [];
 
     if (ct.includes("multipart/form-data")) {
@@ -32,6 +34,7 @@ export async function POST(req: Request) {
       prompt = String(form.get("prompt") ?? "").trim();
       sessionLabel = String(form.get("sessionLabel") ?? "").trim() || undefined;
       requestId = String(form.get("requestId") ?? "").trim() || undefined;
+      brain = cookBrainFromInput(form.get("brain"));
       const cat = String(form.get("category") ?? "").trim();
       if (CATEGORIES.includes(cat as Category)) category = cat as Category;
       const taken = await takeMultipartInputs(form);
@@ -45,6 +48,7 @@ export async function POST(req: Request) {
           pipelineMode: "task",
           sessionLabel,
           requestId,
+          brain,
           outputResolution: normalizeOutputResolution("1080p"),
           inputFiles: taken.files.length ? taken.files : undefined,
           userId: user.userId,
@@ -57,6 +61,7 @@ export async function POST(req: Request) {
           task: true,
           stage: "plan",
           taskWeight: null,
+          brain: brain === "carbon" ? "Carbon" : "Argon",
           run,
         });
       } finally {
@@ -68,8 +73,10 @@ export async function POST(req: Request) {
         sessionLabel?: string;
         category?: string;
         requestId?: string;
+        brain?: string;
         sources?: { name?: string; url?: string }[];
       };
+      brain = cookBrainFromInput(body.brain);
       sources = Array.isArray(body.sources) ? body.sources : [];
       prompt = String(body.prompt ?? "").trim();
       sessionLabel = body.sessionLabel?.trim() || undefined;
@@ -89,6 +96,7 @@ export async function POST(req: Request) {
       pipelineMode: "task",
       sessionLabel,
       requestId,
+      brain,
       outputResolution: normalizeOutputResolution("1080p"),
       inputFiles: sources.length
         ? sources.map((source) => ({
@@ -107,12 +115,13 @@ export async function POST(req: Request) {
       task: true,
       stage: "plan",
       taskWeight: null,
+      brain: brain === "carbon" ? "Carbon" : "Argon",
       run,
     });
   } catch (err) {
     if (isAuthError(err)) return fail("unauthorized", 401);
     const message = err instanceof Error ? err.message : String(err);
-    if (/task file address/i.test(message)) return fail(message, 400);
+    if (/task file address/i.test(message) || message === "brain must be argon or carbon") return fail(message, 400);
     return fail(message, 500);
   }
 }

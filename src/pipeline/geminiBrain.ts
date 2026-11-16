@@ -12,6 +12,7 @@ import {
   type Part,
 } from "@google/genai";
 import { BRAIN_MODEL } from "./constants";
+import { brainLabel } from "./brainChoice";
 import { withGeminiAdmission } from "./geminiAdmission";
 
 export type BrainMessage = {
@@ -101,7 +102,7 @@ export async function brainCompletion(opts: {
       },
     });
     const text = (result.text ?? "").trim();
-    if (!text) throw new Error(`Argon brain (${model}) returned no content`);
+    if (!text) throw new Error(`${brainLabel(model)} brain (${model}) returned no content`);
     return text;
   });
 }
@@ -157,7 +158,7 @@ export async function brainWithTools(opts: {
   ];
 
   for (let round = 0; round < maxRounds; round++) {
-    opts.onStatus?.(`Argon tool round ${round + 1}/${maxRounds}…`);
+    opts.onStatus?.(`${brainLabel(model)} tool round ${round + 1}/${maxRounds}…`);
     const result = await withGeminiAdmission(
       "argon",
       () =>
@@ -188,7 +189,7 @@ export async function brainWithTools(opts: {
 
     if (!calls.length) {
       const text = (result.text ?? "").trim();
-      if (!text) throw new Error(`Argon brain (${model}) returned no content after tools`);
+      if (!text) throw new Error(`${brainLabel(model)} brain (${model}) returned no content after tools`);
       return text;
     }
 
@@ -219,5 +220,5 @@ export async function brainWithTools(opts: {
     contents.push({ role: "user", parts: responseParts });
   }
 
-  throw new Error(`Argon tool loop exceeded ${maxRounds} rounds without a final plan`);
+  throw new Error(`${brainLabel(model)} tool loop exceeded ${maxRounds} rounds without a final plan`);
 }

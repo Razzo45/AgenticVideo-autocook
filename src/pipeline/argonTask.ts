@@ -7,6 +7,7 @@ import path from "node:path";
 import type { Part } from "@google/genai";
 import { brainCompletion } from "./geminiBrain";
 import { BRAIN_MODEL } from "./constants";
+import { brainLabel } from "./brainChoice";
 import { hydrateRunInputs } from "./inputs";
 import { classifyAttachment } from "./attachForArgon";
 import { runDir } from "./paths";
@@ -16,10 +17,17 @@ import { weightFromDeliverables, type PlannedDeliverable } from "./taskWeight";
 import { buildComposition, composeInstructions, parseComposition } from "./composition";
 import { enqueueJob, updateRun, upsertAsset, type RunRow } from "../db";
 
-export const PLAN_SYSTEM = `You are Argon. Read the operator message and the attached files.
+export function planSystem(label: "Argon" | "Carbon"): string {
+  return `You are ${label}. Read the operator message and the attached files.
 Reply with JSON only:
 {"deliverables":[{"deliverable":"image"|"svg"|"html"|"pdf"|"pptx"|"audio"|"video","id":"string","filename":"string","note":"what this file is"}]}
 One object per file you will produce. Do not generate the files in this step. Do not rewrite the operator message.`;
+}
+
+function runBrain(run: RunRow): { model: string; label: "Argon" | "Carbon" } {
+  const model = run.script_model?.trim() || BRAIN_MODEL;
+  return { model, label: brainLabel(model) };
+}
 
 export type TaskDeliverable = { id: string; label: string; path: string };
 
@@ -94,12 +102,13 @@ async function operatorParts(run: RunRow): Promise<{ parts: Part[]; placed: Map<
 export async function jobArgonPlan(run: RunRow): Promise<void> {
   const dir = runDir(run.id);
   fs.mkdirSync(dir, { recursive: true });
-  await updateRun(run.id, { status: "generating", gate: null, error: "Argon is fetching the task files…" });
+  const { model, label } = runBrain(run);
+  await updateRun(run.id, { status: "generating", gate: null, error: `${label} is fetching the task files…` });
   const { parts: userParts } = await operatorParts(run);
-  await updateRun(run.id, { status: "generating", gate: null, error: "Argon is reading the task…" });
+  await updateRun(run.id, { status: "generating", gate: null, error: `${label} is reading the task…` });
   const text = await brainCompletion({
-    model: BRAIN_MODEL,
-    messages: [{ role: "system", content: PLAN_SYSTEM }],
+    model,
+    messages: [{ role: "system", content: planSystem(label) }],
     userParts,
     json: true,
   });
@@ -112,14 +121,15 @@ export async function jobArgonPlan(run: RunRow): Promise<void> {
   await updateRun(run.id, {
     status: "queued",
     gate: null,
-    error: `Queued for deliverables (${summary}) — weight ${schedule.weight}`,
+    error: `${label} is queued for deliverables (${summary}) — weight ${schedule.weight}`,
   });
 }
 
 export async function jobArgonTask(run: RunRow): Promise<void> {
   const dir = runDir(run.id);
   fs.mkdirSync(dir, { recursive: true });
-  await updateRun(run.id, { status: "generating", gate: null, error: "Argon is writing the deliverables…" });
+  const { model, label } = runBrain(run);
+  await updateRun(run.id, { status: "generating", gate: null, error: `${label} is writing the deliverables…` });
 
   const inputs = await hydrateRunInputs(run.input_assets_json);
   const filesByName = new Map<string, string>();
@@ -132,9 +142,9 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
   const { parts: userParts, placed } = await operatorParts(run);
   for (const [name, abs] of placed) filesByName.set(name, abs);
   const plan = loadArgonPlan(run.id);
-  const system = composeInstructions(plan?.deliverables ?? [], [...filesByName.keys()].sort());
+  const system = composeInstructions(plan?.deliverables ?? [], [...filesByName.keys()].sort(), label);
   let text = await brainCompletion({
-    model: BRAIN_MODEL,
+    model,
     messages: [{ role: "system", content: system }],
     userParts,
     json: true,
@@ -146,7 +156,7 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     text = await brainCompletion({
-      model: BRAIN_MODEL,
+      model,
       messages: [{ role: "system", content: system }],
       userParts: [
         ...userParts,
@@ -166,11 +176,12 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
     workDir: dir,
     filesByName,
     ownerId: run.id,
+    brainLabel: label,
     onStatus: (msg) => {
       void updateRun(run.id, { error: msg, status: "generating" });
     },
   });
-  if (!built.length) throw new Error("Argon finished without creating a file");
+  if (!built.length) throw new Error(`${label} finished without creating a file`);
 
   const deliverables: TaskDeliverable[] = [];
   for (const file of built) {
