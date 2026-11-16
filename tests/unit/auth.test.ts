@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { isAuthError, requireUser, resolveAuthUser } from "../../src/auth/resolve";
+import { isAuthError, requireOperator, requireUser, resolveAuthUser } from "../../src/auth/resolve";
 import { mintLaunchToken, signHs256, verifyHs256 } from "../../src/auth/jwt";
 
 const saved = {
@@ -61,6 +61,20 @@ describe("auth", () => {
       );
       assert.equal(user?.kind, "service");
       assert.equal(user?.userId, "mother-user");
+    } finally {
+      restore();
+    }
+  });
+
+  it("lets the service token read the queue without a user id", () => {
+    process.env.AUTH_MODE = "strict";
+    process.env.AUTOCOOK_SERVICE_TOKEN = "svc-unit-token";
+    try {
+      requireOperator(new Request("http://localhost/api/queue", { headers: { authorization: "Bearer svc-unit-token" } }));
+      assert.throws(
+        () => requireOperator(new Request("http://localhost/api/queue")),
+        (err: unknown) => isAuthError(err),
+      );
     } finally {
       restore();
     }

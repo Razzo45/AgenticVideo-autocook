@@ -8,6 +8,7 @@ import {
   LANE_DEFAULT,
 } from "../pipeline/jobLanes";
 import { scheduleForJob } from "../pipeline/taskWeight";
+import { clipStatusLine, type QueueSnapshot, type QueueTask } from "../pipeline/queueStatus";
 import type { AssetRow, JobRow, ReviewRow, RunRow, VariantRow } from "./types";
 
 export { postgresConfigured };
@@ -343,6 +344,60 @@ export async function pgJobQueueStats(): Promise<{ running: number; pending: num
   );
   const row = rows[0];
   return { running: Number(row?.running ?? 0), pending: Number(row?.pending ?? 0) };
+}
+
+export async function pgQueueSnapshot(): Promise<QueueSnapshot> {
+  const jobRows = await pgQuery<{ status: string; n: string }>(
+    `SELECT status, COUNT(*)::text AS n FROM app.jobs GROUP BY status`,
+  );
+  const runRows = await pgQuery<{ status: string; n: string }>(
+    `SELECT status, COUNT(*)::text AS n FROM app.runs GROUP BY status`,
+  );
+  const active = await pgQuery<Record<string, unknown>>(
+    `SELECT j.run_id AS run_id, j.type AS job_type, j.status AS job_status,
+            COALESCE(j.task_weight, 10) AS task_weight, j.updated_at AS updated_at,
+            r.status AS run_status, r.error AS error, r.pipeline_mode AS pipeline_mode,
+            r.session_id AS session_id
+     FROM app.jobs j
+     JOIN app.runs r ON r.id = j.run_id
+     WHERE j.status IN ('pending', 'running')
+     ORDER BY j.created_at ASC`,
+  );
+  const orphans = await pgQuery<Record<string, unknown>>(
+    `SELECT r.id AS run_id, r.status AS run_status, r.error AS error,
+            r.pipeline_mode AS pipeline_mode, r.session_id AS session_id, r.updated_at AS updated_at
+     FROM app.runs r
+     WHERE r.status IN ('queued', 'generating')
+       AND NOT EXISTS (
+         SELECT 1 FROM app.jobs j
+         WHERE j.run_id = r.id AND j.status IN ('pending', 'running')
+       )
+     ORDER BY r.updated_at DESC
+     LIMIT 40`,
+  );
+  const jobs: Record<string, number> = {};
+  for (const row of jobRows) jobs[row.status] = Number(row.n);
+  const runs: Record<string, number> = {};
+  for (const row of runRows) runs[row.status] = Number(row.n);
+  const tasks: QueueTask[] = [
+    ...active.map((row) => pgQueueTask(row, true)),
+    ...orphans.map((row) => pgQueueTask(row, false)),
+  ];
+  return { at: new Date().toISOString(), jobs, runs, tasks };
+}
+
+function pgQueueTask(row: Record<string, unknown>, withJob: boolean): QueueTask {
+  return {
+    runId: String(row.run_id),
+    sessionId: clipStatusLine(row.session_id == null ? "" : String(row.session_id), 80),
+    pipelineMode: String(row.pipeline_mode ?? ""),
+    runStatus: String(row.run_status ?? ""),
+    jobType: withJob ? String(row.job_type ?? "") : null,
+    jobStatus: withJob ? String(row.job_status ?? "") : null,
+    taskWeight: withJob ? Number(row.task_weight ?? 10) : null,
+    updatedAt: iso(row.updated_at),
+    line: clipStatusLine(row.error == null ? "" : String(row.error)),
+  };
 }
 
 export async function pgRunHasBusyJobs(runId: string): Promise<boolean> {
