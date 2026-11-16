@@ -12,7 +12,7 @@ import { hydrateRunInputs } from "./inputs";
 import { classifyAttachment } from "./attachForArgon";
 import { runDir } from "./paths";
 import { stageLocalPath } from "./geminiStaging";
-import { persistRunFile } from "./storage";
+import { ensureAbsRunFile, persistRunFile } from "./storage";
 import { weightFromDeliverables, type PlannedDeliverable } from "./taskWeight";
 import { buildComposition, composeInstructions, parseComposition } from "./composition";
 import { enqueueJob, updateRun, upsertAsset, type RunRow } from "../db";
@@ -37,9 +37,15 @@ function planPath(runId: string): string {
   return path.join(runDir(runId), "argon_plan.json");
 }
 
-export function loadArgonPlan(runId: string): ArgonPlan | null {
+export async function loadArgonPlan(runId: string): Promise<ArgonPlan | null> {
+  const file = planPath(runId);
   try {
-    const parsed = JSON.parse(fs.readFileSync(planPath(runId), "utf8")) as ArgonPlan;
+    await ensureAbsRunFile(file);
+  } catch {
+    /* local copy, or the plan never landed in the bucket */
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as ArgonPlan;
     if (!Array.isArray(parsed.deliverables)) return null;
     return parsed;
   } catch {
@@ -129,7 +135,7 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
   const dir = runDir(run.id);
   fs.mkdirSync(dir, { recursive: true });
   const { model, label } = runBrain(run);
-  await updateRun(run.id, { status: "generating", gate: null, error: `${label} is writing the deliverables…` });
+  await updateRun(run.id, { status: "generating", gate: null, error: `${label} is fetching the task files…` });
 
   const inputs = await hydrateRunInputs(run.input_assets_json);
   const filesByName = new Map<string, string>();
@@ -141,8 +147,9 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
 
   const { parts: userParts, placed } = await operatorParts(run);
   for (const [name, abs] of placed) filesByName.set(name, abs);
-  const plan = loadArgonPlan(run.id);
+  const plan = await loadArgonPlan(run.id);
   const system = composeInstructions(plan?.deliverables ?? [], [...filesByName.keys()].sort(), label);
+  await updateRun(run.id, { status: "generating", gate: null, error: `${label} is writing the deliverables…` });
   let text = await brainCompletion({
     model,
     messages: [{ role: "system", content: system }],
