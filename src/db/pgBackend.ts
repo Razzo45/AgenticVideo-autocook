@@ -128,12 +128,20 @@ export async function pgListRuns(userId?: string): Promise<RunRow[]> {
 export async function pgUpdateRun(id: string, patch: Partial<RunRow>): Promise<void> {
   const current = await pgGetRun(id);
   if (!current) throw new Error(`Unknown run ${id}`);
-  // Ignore late fire-and-forget ticker writes after the run already failed/exported.
+  // Terminal FSM: failed/exported/rejected cannot be resurrected into active cook states.
   let safePatch: Partial<RunRow> = patch;
-  if (current.status === "failed" || current.status === "exported") {
+  const terminal = current.status === "failed" || current.status === "exported" || current.status === "rejected";
+  if (terminal) {
     safePatch = { ...patch };
-    if (patch.status === "generating") safePatch.status = current.status;
-    // Tool tickers only pass { error } — do not overwrite the terminal failure/export message.
+    if (
+      patch.status === "generating" ||
+      patch.status === "queued" ||
+      patch.status === "stitching" ||
+      patch.status === "rework"
+    ) {
+      safePatch.status = current.status;
+    }
+    // Tool tickers only pass { error } — do not overwrite the terminal message.
     if (patch.error !== undefined && patch.status === undefined) safePatch.error = current.error;
   }
   const next = { ...current, ...safePatch };
@@ -360,6 +368,39 @@ export async function pgFinishJob(id: string, status: "done" | "error", error?: 
     error ?? null,
     id,
   ]);
+}
+
+export async function pgErrorBusyJobsForRun(runId: string, error: string): Promise<number> {
+  const rows = await pgQuery<{ id: string }>(
+    `UPDATE app.jobs SET status='error', error=$1, updated_at=now()
+     WHERE run_id=$2 AND status IN ('pending','running')
+     RETURNING id`,
+    [error, runId],
+  );
+  return rows.length;
+}
+
+export async function pgReleaseStuckArgonPlanJobs(): Promise<number> {
+  const rows = await pgQuery<{ id: string }>(
+    `SELECT plan.id AS id FROM app.jobs plan
+     INNER JOIN app.runs r ON r.id = plan.run_id
+     WHERE plan.type = 'argon_plan'
+       AND plan.status = 'running'
+       AND r.status = 'queued'
+       AND EXISTS (
+         SELECT 1 FROM app.jobs ex
+         WHERE ex.run_id = plan.run_id
+           AND ex.type IN ('argon_execute', 'argon_task')
+           AND ex.status = 'pending'
+       )`,
+  );
+  for (const row of rows) {
+    await pgQuery(
+      `UPDATE app.jobs SET status='done', error=NULL, updated_at=now() WHERE id=$1 AND status='running'`,
+      [row.id],
+    );
+  }
+  return rows.length;
 }
 
 export async function pgJobQueueStats(): Promise<{ running: number; pending: number }> {

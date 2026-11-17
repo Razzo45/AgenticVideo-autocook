@@ -10,7 +10,15 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { getDb, getRun, listRuns, runHasBusyJobs, updateRun, type RunRow } from "../db";
+import {
+  getDb,
+  getRun,
+  listRuns,
+  releaseStuckArgonPlanJobs,
+  runHasBusyJobs,
+  updateRun,
+  type RunRow,
+} from "../db";
 import { RUNS_DIR, runDir } from "./paths";
 import { deleteRunPrefix, storageMode } from "./storage";
 import { reapGeminiFiles } from "./geminiStaging";
@@ -172,6 +180,15 @@ export async function runHygieneSweep(): Promise<{
   let stagingPurged = 0;
   let runsDeleted = 0;
   const now = Date.now();
+  let stuckPlansReleased = 0;
+  try {
+    stuckPlansReleased = await releaseStuckArgonPlanJobs();
+    if (stuckPlansReleased > 0) {
+      console.warn(`[hygiene] released ${stuckPlansReleased} stuck argon_plan job(s)`);
+    }
+  } catch (err) {
+    console.warn("[hygiene] releaseStuckArgonPlanJobs failed", err);
+  }
   const orphansFailed = await failOrphanGeneratingRuns(now);
 
   let runs: RunRow[] = [];

@@ -5,6 +5,7 @@ import type { Checklist } from "@/src/pipeline/schema";
 import {
   approveFinal,
   approveScript,
+  cancelRun,
   editClip,
   failFinal,
   rejectClips,
@@ -81,6 +82,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         break;
       case "retry":
         await retryRun(id);
+        break;
+      case "cancel":
+        await cancelRun(id, body.comment?.trim() || "Cancelled by operator");
         break;
       default:
         return fail("unknown action");

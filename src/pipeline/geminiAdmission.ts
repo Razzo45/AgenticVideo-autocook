@@ -54,6 +54,12 @@ export function withGeminiOwner<T>(
   return ctxStore.run({ ownerId, requestClass }, fn);
 }
 
+/** Active cook run id for control-plane abort / deadlines (anonymous outside a job). */
+export function currentGeminiOwnerId(): string | undefined {
+  const id = ctxStore.getStore()?.ownerId;
+  return id && id !== "anonymous" ? id : undefined;
+}
+
 function currentCtx(): Ctx {
   return ctxStore.getStore() ?? { ownerId: "anonymous", requestClass: "background" };
 }
