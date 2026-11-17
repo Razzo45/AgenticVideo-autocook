@@ -323,8 +323,27 @@ export async function pgReclaimRunningJobs(): Promise<number> {
       ],
     );
   }
+  // Task / doc cooks: fail instead of silent re-queue (fit_image hang was retrying forever).
+  const taskInterrupted = await pgQuery<{ id: string; run_id: string }>(
+    `SELECT j.id AS id, j.run_id AS run_id FROM app.jobs j
+     INNER JOIN app.runs r ON r.id = j.run_id
+     WHERE j.status = 'running' AND r.pipeline_mode IN ('task', 'html', 'pptx', 'image', 'pdf')`,
+  );
+  for (const row of taskInterrupted) {
+    await pgQuery(`UPDATE app.jobs SET status='error', error=$1, updated_at=now() WHERE id=$2`, [
+      "Task interrupted (worker restarted mid-tool). Not auto-resumed — retry the cook.",
+      row.id,
+    ]);
+    await pgQuery(
+      `UPDATE app.runs SET status='failed', error=$1, gate=NULL, updated_at=now() WHERE id=$2`,
+      [
+        "Stopped: worker interrupted mid-tool (often fit_image/ffmpeg). Retry the cook.",
+        row.run_id,
+      ],
+    );
+  }
   const res = await pgQuery(`UPDATE app.jobs SET status='pending', updated_at=now() WHERE status='running' RETURNING id`);
-  return res.length + autoInterrupted.length;
+  return res.length + autoInterrupted.length + taskInterrupted.length;
 }
 
 export async function pgFinishJob(id: string, status: "done" | "error", error?: string): Promise<void> {

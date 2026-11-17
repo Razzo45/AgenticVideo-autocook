@@ -648,10 +648,37 @@ export async function reclaimRunningJobs(): Promise<number> {
         row.run_id,
       );
   }
+  // Task / doc cooks: do not silently re-queue mid-tool (fit_image hang → infinite retry).
+  // Fail the run so the operator can retry cleanly.
+  const taskInterrupted = database
+    .prepare(
+      `SELECT j.id AS id, j.run_id AS run_id, j.type AS type FROM jobs j
+       INNER JOIN runs r ON r.id = j.run_id
+       WHERE j.status = 'running' AND r.pipeline_mode IN ('task', 'html', 'pptx', 'image', 'pdf')`,
+    )
+    .all() as Array<{ id: string; run_id: string; type: string }>;
+  for (const row of taskInterrupted) {
+    database
+      .prepare("UPDATE jobs SET status=?, error=?, updated_at=? WHERE id=?")
+      .run(
+        "error",
+        "Task interrupted (worker restarted mid-tool). Not auto-resumed — retry the cook.",
+        ts,
+        row.id,
+      );
+    database
+      .prepare("UPDATE runs SET status=?, error=?, gate=NULL, updated_at=? WHERE id=?")
+      .run(
+        "failed",
+        "Stopped: worker interrupted mid-tool (often fit_image/ffmpeg). Retry the cook.",
+        ts,
+        row.run_id,
+      );
+  }
   const result = database
     .prepare("UPDATE jobs SET status='pending', updated_at=? WHERE status='running'")
     .run(ts);
-  return Number(result.changes ?? 0) + autoInterrupted.length;
+  return Number(result.changes ?? 0) + autoInterrupted.length + taskInterrupted.length;
 }
 
 export async function finishJob(id: string, status: "done" | "error", error?: string): Promise<void> {

@@ -6,6 +6,7 @@ import { before, describe, it } from "node:test";
 
 let root = "";
 let purgeRunStaging: typeof import("../../src/pipeline/hygiene").purgeRunStaging;
+let failOrphanGeneratingRuns: typeof import("../../src/pipeline/hygiene").failOrphanGeneratingRuns;
 let scheduleForJob: typeof import("../../src/pipeline/taskWeight").scheduleForJob;
 
 before(async () => {
@@ -13,7 +14,9 @@ before(async () => {
   process.env.RUNS_DIR = root;
   process.env.SQLITE_PATH = path.join(root, "pipeline.db");
   delete process.env.DATABASE_URL;
-  purgeRunStaging = (await import("../../src/pipeline/hygiene")).purgeRunStaging;
+  const hygiene = await import("../../src/pipeline/hygiene");
+  purgeRunStaging = hygiene.purgeRunStaging;
+  failOrphanGeneratingRuns = hygiene.failOrphanGeneratingRuns;
   scheduleForJob = (await import("../../src/pipeline/taskWeight")).scheduleForJob;
 });
 
@@ -41,6 +44,37 @@ describe("finished-run hygiene", () => {
     assert.equal(fs.existsSync(path.join(dir, "inputs")), false);
     assert.equal(fs.existsSync(path.join(dir, "out", "Deck.pptx")), true);
     assert.equal(fs.existsSync(path.join(dir, "argon_plan.json")), true);
+  });
+});
+
+describe("orphan generating runs", () => {
+  it("fails a generating run with no job after the idle window", async () => {
+    const { createRun } = await import("../../src/pipeline/orchestrator");
+    const { getDb, getRun, updateRun } = await import("../../src/db/index");
+    const run = await createRun({
+      prompt: "fit a cover",
+      category: "Short Drama / Film & TV",
+      duration: 1,
+      aspect: "9:16",
+      pipelineMode: "task",
+      userId: "unit-user",
+    });
+    await updateRun(run.id, {
+      status: "generating",
+      error: "Carbon tool fit_image (cover, 1080x1920 cover)…",
+    });
+    // Drop any plan/execute queue rows so this looks like a lost mid-tool cook.
+    getDb().prepare("UPDATE jobs SET status='error', error=? WHERE run_id=?").run("superseded", run.id);
+    // Force an old updated_at — updateRun stamps now, so patch via SQL.
+    getDb()
+      .prepare("UPDATE runs SET updated_at=? WHERE id=?")
+      .run(new Date(Date.now() - 15 * 60_000).toISOString(), run.id);
+
+    const failed = await failOrphanGeneratingRuns();
+    assert.ok(failed >= 1);
+    const fresh = await getRun(run.id);
+    assert.equal(fresh?.status, "failed");
+    assert.match(fresh?.error ?? "", /no worker job|fit_image/);
   });
 });
 
