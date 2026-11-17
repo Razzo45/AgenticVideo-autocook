@@ -15,6 +15,34 @@ export const OMNI_API_MODEL = "gemini-omni-1.1-flash";
 export const OMNI_DURATIONS = [3, 4, 5, 6, 7, 8, 9, 10] as const;
 const OMNI_MAX_VIDEOS = 3;
 const OMNI_MAX_VIDEO_SEC = 10;
+/** Hard ceiling on interactions.create — live cooks were hanging forever on "Submitting…". */
+const OMNI_SUBMIT_TIMEOUT_MS = Number(process.env.OMNI_SUBMIT_TIMEOUT_MS) || 5 * 60_000;
+
+async function withTimeoutAndHeartbeat<T>(
+  work: Promise<T>,
+  opts: { timeoutMs: number; label: string; onStatus?: (msg: string) => void; intervalMs?: number },
+): Promise<T> {
+  const started = Date.now();
+  const timer = opts.onStatus
+    ? setInterval(() => {
+        const sec = Math.round((Date.now() - started) / 1000);
+        opts.onStatus?.(`${opts.label} (waiting ${sec}s)…`);
+      }, opts.intervalMs ?? 20_000)
+    : null;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        setTimeout(
+          () => reject(new Error(`${opts.label} timed out after ${Math.round(opts.timeoutMs / 1000)}s`)),
+          opts.timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearInterval(timer);
+  }
+}
 
 export function isOmniModel(slug: string): boolean {
   return /gemini-omni/i.test(slug);
@@ -352,9 +380,14 @@ async function generateOmniVideoAdmitted(opts: Parameters<typeof generateOmniVid
 
     let interaction;
     try {
-      interaction = await ai.interactions.create(buildRequest(input, task));
+      interaction = await withTimeoutAndHeartbeat(ai.interactions.create(buildRequest(input, task)), {
+        timeoutMs: OMNI_SUBMIT_TIMEOUT_MS,
+        label: `Gemini Omni submit (${OMNI_API_MODEL}, ${durationSec}s)`,
+        onStatus: opts.onStatus,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (/timed out after/i.test(msg)) throw err;
       const blocked = /input blocked|content_blocked|prohibited use|sensitive words|request blocked|safety violation/i.test(msg);
       if (!blocked || !uploadedVideos.length) throw err;
 
@@ -379,7 +412,14 @@ async function generateOmniVideoAdmitted(opts: Parameters<typeof generateOmniVid
               textPayload.slice(0, 600),
             ].join("\n\n"),
       });
-      interaction = await ai.interactions.create(buildRequest(imageOnly, "image_to_video"));
+      interaction = await withTimeoutAndHeartbeat(
+        ai.interactions.create(buildRequest(imageOnly, "image_to_video")),
+        {
+          timeoutMs: OMNI_SUBMIT_TIMEOUT_MS,
+          label: `Gemini Omni I2V fallback (${OMNI_API_MODEL}, ${durationSec}s)`,
+          onStatus: opts.onStatus,
+        },
+      );
     }
 
     const status = String((interaction as { status?: string }).status ?? "");

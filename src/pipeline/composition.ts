@@ -419,6 +419,8 @@ function normalizeDeliverable(raw: unknown, index: number): Record<string, unkno
     pad_color: str(row.pad_color),
     places: strings(row.places),
   };
+  const audioIntent = String(row.audio ?? "").trim().toLowerCase();
+  if (audioIntent === "keep" || audioIntent === "mute") base.audio = audioIntent;
   if (Array.isArray(row.slides)) {
     base.slides = row.slides.map((slide) => normalizeSlide(slide)).filter(Boolean);
   }

@@ -696,6 +696,37 @@ export async function finishJob(id: string, status: "done" | "error", error?: st
     .run(status, error ?? null, nowIso(), id);
 }
 
+/**
+ * Plan already enqueued execute and set the run to queued, but the plan job is
+ * still "running" (e.g. hung post-job S3 persist). Release it so execute can claim.
+ */
+export async function releaseStuckArgonPlanJobs(): Promise<number> {
+  if (usePg()) return pg.pgReleaseStuckArgonPlanJobs();
+  const database = getDb();
+  const rows = database
+    .prepare(
+      `SELECT plan.id AS id FROM jobs plan
+       INNER JOIN runs r ON r.id = plan.run_id
+       WHERE plan.type = 'argon_plan'
+         AND plan.status = 'running'
+         AND r.status = 'queued'
+         AND EXISTS (
+           SELECT 1 FROM jobs ex
+           WHERE ex.run_id = plan.run_id
+             AND ex.type IN ('argon_execute', 'argon_task')
+             AND ex.status = 'pending'
+         )`,
+    )
+    .all() as Array<{ id: string }>;
+  const ts = nowIso();
+  for (const row of rows) {
+    database
+      .prepare("UPDATE jobs SET status='done', error=NULL, updated_at=? WHERE id=? AND status='running'")
+      .run(ts, row.id);
+  }
+  return rows.length;
+}
+
 export async function insertVariant(row: Omit<VariantRow, "created_at">): Promise<VariantRow> {
   if (usePg()) return pg.pgInsertVariant(row);
   const ts = nowIso();
