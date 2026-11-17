@@ -369,7 +369,12 @@ export async function updateRun(id: string, patch: Partial<RunRow>): Promise<voi
   if (usePg()) return pg.pgUpdateRun(id, patch);
   const current = await getRun(id);
   if (!current) throw new Error(`Unknown run ${id}`);
-  const next = { ...current, ...patch, updated_at: nowIso() };
+  // Ignore late fire-and-forget "generating" ticks after the run already failed/exported.
+  const safePatch =
+    patch.status === "generating" && (current.status === "failed" || current.status === "exported")
+      ? { ...patch, status: current.status }
+      : patch;
+  const next = { ...current, ...safePatch, updated_at: nowIso() };
   getDb()
     .prepare(
       `UPDATE runs SET

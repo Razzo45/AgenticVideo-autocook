@@ -59,7 +59,8 @@ export async function jobDocCook(run: RunRow): Promise<void> {
     attachmentNames,
     workDir: dir,
     referenceImagePaths,
-    onStatus: async (msg) => await updateRun(run.id, { error: msg, status: "generating" }),
+    // Ticker only — do not force status generating (races with failed/exported).
+    onStatus: async (msg) => await updateRun(run.id, { error: msg }),
   });
 
   const masterPath = result.masterPath;

@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { GoogleGenAI, Type, type FunctionDeclaration } from "@google/genai";
+import sharp from "sharp";
 import { generateOmniVideo } from "../pipeline/geminiOmni";
 import { withGeminiAdmission } from "../pipeline/geminiAdmission";
 import type { HtmlMediaAsset } from "../pipeline/schemaDocs";
@@ -271,6 +272,34 @@ function scaleFilter(width: number, height: number, fit: "contain" | "cover" | "
   return `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${color}`;
 }
 
+function sharpPadColor(value: string): { r: number; g: number; b: number; alpha: number } {
+  const hex = String(value ?? "FFFFFF").trim().replace(/^#/, "").replace(/^0x/i, "");
+  const body = /^[0-9A-Fa-f]{6}$/.test(hex) ? hex : "FFFFFF";
+  const n = Number.parseInt(body, 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255, alpha: 1 };
+}
+
+/** Resize a still with sharp — avoids live ffmpeg hangs on cover fits. */
+async function fitStillWithSharp(
+  source: string,
+  outPath: string,
+  width: number,
+  height: number,
+  fit: "contain" | "cover" | "stretch",
+  padColorHex: string,
+): Promise<void> {
+  const background = sharpPadColor(padColorHex);
+  let pipeline = sharp(source, { failOn: "none", animated: false }).rotate();
+  if (fit === "cover") {
+    pipeline = pipeline.resize(width, height, { fit: "cover", position: "centre" });
+  } else if (fit === "stretch") {
+    pipeline = pipeline.resize(width, height, { fit: "fill" });
+  } else {
+    pipeline = pipeline.resize(width, height, { fit: "contain", background });
+  }
+  await pipeline.png().toFile(outPath);
+}
+
 /**
  * Build the join_videos filter_complex graph.
  * ffmpeg concat with audio expects interleaved pads per segment: [v0][a0][v1][a1]…
@@ -473,31 +502,35 @@ export async function executeArgonMediaTool(
     const source = resolveSource(ctx, String(args.source ?? args.source_id ?? ""));
     const sourceStat = fs.statSync(source);
     if (sourceStat.size < 32) throw new Error(`fit_image: source is empty (${path.basename(source)})`);
-    const sourceProbe = await probeSource(source);
-    if (!(sourceProbe.width > 0 && sourceProbe.height > 0)) {
-      throw new Error(`fit_image: source has no video/image frame (${path.basename(source)})`);
-    }
-    // A long video as "cover" used to hang live ffmpeg with no timeout. Cap the demux.
-    const looksStill = /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(source);
-    const isTimedMedia = !looksStill && (sourceProbe.duration ?? 0) > 0.2;
     ctx.onStatus?.(toolStatus(ctx, `fit_image (${id}, ${width}x${height} ${fit})…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
-    await ffmpegOut(
-      absPath,
-      [
-        ...(isTimedMedia ? ["-ss", "0", "-t", "1"] : []),
-        "-i",
-        source,
-        "-vf",
-        scaleFilter(width, height, fit, padColor(args.pad_color, "FFFFFF")),
-        "-frames:v",
-        "1",
-      ],
-      FIT_IMAGE_TIMEOUT_MS,
-    );
+    // Stills: sharp (ffmpeg was hanging on live for cover fits). Video: one frame via ffmpeg then sharp.
+    const looksStill = /\.(png|jpe?g|webp|gif|bmp|svg|tif{1,2})$/i.test(source);
+    let stillPath = source;
+    let tmpFrame: string | null = null;
+    try {
+      if (!looksStill) {
+        const sourceProbe = await probeSource(source);
+        if (!(sourceProbe.width > 0 && sourceProbe.height > 0)) {
+          throw new Error(`fit_image: source has no video/image frame (${path.basename(source)})`);
+        }
+        if ((sourceProbe.duration ?? 0) > 0.2) {
+          tmpFrame = path.join(ctx.stagingDir, `.${process.pid}.${id}.frame.png`);
+          await ffmpegOut(
+            tmpFrame,
+            ["-ss", "0", "-t", "1", "-i", source, "-frames:v", "1", "-an"],
+            FIT_IMAGE_TIMEOUT_MS,
+          );
+          stillPath = tmpFrame;
+        }
+      }
+      await fitStillWithSharp(stillPath, absPath, width, height, fit, String(args.pad_color ?? "FFFFFF"));
+    } finally {
+      if (tmpFrame) fs.rmSync(tmpFrame, { force: true });
+    }
     const buf = fs.readFileSync(absPath);
-    const probed = await probeSource(absPath);
+    const meta = await sharp(absPath).metadata();
     remember(ctx, {
       id,
       format: "png",
@@ -512,8 +545,8 @@ export async function executeArgonMediaTool(
       id,
       filename,
       mime: "image/png",
-      width: probed.width,
-      height: probed.height,
+      width: meta.width ?? width,
+      height: meta.height ?? height,
       fit,
       bytes: buf.length,
     };
