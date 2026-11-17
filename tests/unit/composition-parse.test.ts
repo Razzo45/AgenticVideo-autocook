@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { plannedSvgTargets } from "../../src/pipeline/argonTask";
+import { plannedHtmlTargets, plannedSvgTargets } from "../../src/pipeline/argonTask";
 import { composeInstructions, parseComposition } from "../../src/pipeline/composition";
 
 describe("composition parse", () => {
@@ -47,6 +47,21 @@ describe("composition parse", () => {
       [
         { id: "a", filename: "A.svg" },
         { id: "B", filename: "B.svg" },
+      ],
+    );
+  });
+
+  it("lists planned HTML targets for guided write_html", () => {
+    const targets = plannedHtmlTargets([
+      { deliverable: "html", id: "home", filename: "index.html" },
+      { deliverable: "webpage", filename: "About.html" },
+      { deliverable: "pptx", filename: "Deck.pptx" },
+    ]);
+    assert.deepEqual(
+      targets.map((t) => ({ id: t.id, filename: t.filename })),
+      [
+        { id: "home", filename: "index.html" },
+        { id: "About", filename: "About.html" },
       ],
     );
   });

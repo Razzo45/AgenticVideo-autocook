@@ -52,6 +52,35 @@ export type BrainMessage = {
   content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
 };
 
+const STAGED_MARKUP_TOOLS = new Set(["write_html", "write_svg"]);
+const STAGED_MARKUP_SCRUB_CHARS = 400;
+
+/**
+ * After write_html / write_svg succeed, the full markup sits in the functionCall
+ * args and would be re-sent every later round — that blows the context and hangs
+ * round 2+. Keep a short stub; the platform already staged the bytes on disk.
+ */
+function scrubStagedMarkupArgs(parts: Part[]): Part[] {
+  return parts.map((part) => {
+    const call = (part as { functionCall?: { name?: string; args?: Record<string, unknown>; id?: string } })
+      .functionCall;
+    if (!call?.name || !STAGED_MARKUP_TOOLS.has(call.name) || !call.args) return part;
+    const args = { ...call.args };
+    for (const key of ["html", "svg"] as const) {
+      const value = args[key];
+      if (typeof value !== "string" || value.length <= STAGED_MARKUP_SCRUB_CHARS) continue;
+      args[key] = `[staged ${value.length} chars — already stored by ${call.name}; do not repeat]`;
+    }
+    return {
+      functionCall: {
+        name: call.name,
+        id: call.id,
+        args,
+      },
+    } as Part;
+  });
+}
+
 function requireGeminiKey(): string {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key || key === "replace-me") {
@@ -257,6 +286,7 @@ export async function brainWithTools(opts: {
     contents.push({ role: "model", parts: modelParts });
 
     const responseParts: Part[] = [];
+    let scrubMarkup = false;
     for (const fc of calls) {
       const name = fc.name ?? "";
       const args = (fc.args ?? {}) as Record<string, unknown>;
@@ -264,6 +294,7 @@ export async function brainWithTools(opts: {
       let response: Record<string, unknown>;
       try {
         response = await opts.onTool(name, args);
+        if (STAGED_MARKUP_TOOLS.has(name) && response.ok !== false) scrubMarkup = true;
       } catch (err) {
         // Cancel / platform timeout → stop the cook. Tool contract mistakes → one pingback.
         if (isCancelledError(err) || isPlatformFaultError(err)) throw err;
@@ -281,6 +312,14 @@ export async function brainWithTools(opts: {
       } as Part);
     }
     contents.push({ role: "user", parts: responseParts });
+    // Drop staged markup from prior model turns so the next round stays thin.
+    if (scrubMarkup) {
+      for (let i = 0; i < contents.length; i++) {
+        const turn = contents[i];
+        if (turn?.role !== "model" || !turn.parts?.length) continue;
+        contents[i] = { role: "model", parts: scrubStagedMarkupArgs(turn.parts) };
+      }
+    }
   }
 
   throw new Error(`${label} tool loop exceeded ${maxRounds} rounds without a final plan`);
@@ -393,6 +432,7 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
 
       contents.push({ role: "model", parts: modelParts.length ? modelParts : candidateParts });
       const responseParts: Part[] = [];
+      let scrubMarkup = false;
       for (const fc of calls) {
         const name = fc.name ?? "";
         const args = (fc.args ?? {}) as Record<string, unknown>;
@@ -400,6 +440,7 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
         let response: Record<string, unknown>;
         try {
           response = await opts.onTool(name, args);
+          if (STAGED_MARKUP_TOOLS.has(name) && response.ok !== false) scrubMarkup = true;
         } catch (err) {
           if (isCancelledError(err) || isPlatformFaultError(err)) throw err;
           response = { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -409,6 +450,13 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
         } as Part);
       }
       contents.push({ role: "user", parts: responseParts });
+      if (scrubMarkup) {
+        for (let i = 0; i < contents.length; i++) {
+          const turn = contents[i];
+          if (turn?.role !== "model" || !turn.parts?.length) continue;
+          contents[i] = { role: "model", parts: scrubStagedMarkupArgs(turn.parts) };
+        }
+      }
 
       const wroteTarget = calls.some(
         (fc) => fc.name === "write_svg" && writeSvgMatchesTarget((fc.args ?? {}) as Record<string, unknown>, target),
@@ -476,4 +524,214 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
     });
   }
   throw new Error(`${label} guided SVG session ended without JSON`);
+}
+
+export type GuidedHtmlTarget = { id: string; filename: string; note?: string };
+
+function writeHtmlMatchesTarget(args: Record<string, unknown>, target: GuidedHtmlTarget): boolean {
+  const id = String(args.id ?? "").trim();
+  const filename = String(args.filename ?? "").trim();
+  return (
+    id === target.id ||
+    filename === target.filename ||
+    filename.endsWith(target.filename) ||
+    path.basename(filename) === path.basename(target.filename)
+  );
+}
+
+/**
+ * HTML-only cooks: force write_html (full page in tool args), scrub history, then thin JSON.
+ * Avoids open-ended tool rounds that hang while inventing a page in one completion.
+ */
+export async function brainGuidedWriteHtmlThenJson(opts: {
+  model?: string;
+  system: string;
+  userParts: Part[];
+  htmlTargets: GuidedHtmlTarget[];
+  tools: FunctionDeclaration[];
+  onTool: BrainToolHandler;
+  onStatus?: (msg: string) => void;
+  perHtmlAttempts?: number;
+}): Promise<string> {
+  const ai = brainClient();
+  const model = opts.model?.trim() || BRAIN_MODEL;
+  const label = brainLabel(model);
+  const perHtmlAttempts = opts.perHtmlAttempts ?? 4;
+  const writeHtmlTools = opts.tools.filter((tool) => tool.name === "write_html");
+  if (!writeHtmlTools.length) throw new Error("brainGuidedWriteHtmlThenJson requires write_html");
+
+  const contents: Content[] = [{ role: "user", parts: opts.userParts }];
+  const system = `${opts.system}
+
+HTML mode: call write_html with the FULL HTML document for each planned page. Do not put the page body in the final JSON. After every page is staged, return thin JSON with empty files.`;
+
+  for (let i = 0; i < opts.htmlTargets.length; i++) {
+    const target = opts.htmlTargets[i]!;
+    const note = target.note?.trim() ? ` Note: ${target.note.trim()}` : "";
+    contents.push({
+      role: "user",
+      parts: [
+        {
+          text: `Call write_html exactly once for id="${target.id}" filename="${target.filename}".${note} Put the FULL HTML document in the tool arguments. Do not return the final JSON yet. Only this one file (${i + 1}/${opts.htmlTargets.length}).`,
+        },
+      ],
+    });
+
+    let landed = false;
+    for (let attempt = 0; attempt < perHtmlAttempts; attempt++) {
+      opts.onStatus?.(
+        `${label} write_html ${i + 1}/${opts.htmlTargets.length} (${target.filename})…`,
+      );
+      const callRound = () =>
+        generateContentBounded(
+          `${label} write_html ${i + 1}/${opts.htmlTargets.length}`,
+          () =>
+            ai.models.generateContent({
+              model,
+              contents,
+              config: {
+                systemInstruction: system,
+                tools: [{ functionDeclarations: writeHtmlTools }],
+                toolConfig: {
+                  functionCallingConfig: {
+                    mode: FunctionCallingConfigMode.ANY,
+                    allowedFunctionNames: ["write_html"],
+                  },
+                },
+                thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+              },
+            }),
+          opts.onStatus,
+        );
+      let result;
+      try {
+        result = await callRound();
+      } catch (err) {
+        if (isCancelledError(err)) throw err;
+        const timedOut =
+          isPlatformFaultError(err) && /timed out/i.test(err instanceof Error ? err.message : String(err));
+        if (!timedOut) throw err;
+        opts.onStatus?.(`${label} write_html timed out — one retry…`);
+        result = await callRound();
+      }
+
+      const calls = result.functionCalls ?? [];
+      const modelParts: Part[] = [];
+      const candidateParts = result.candidates?.[0]?.content?.parts ?? [];
+      if (candidateParts.length) {
+        for (const p of candidateParts) modelParts.push(p as Part);
+      } else if (calls.length) {
+        for (const fc of calls) {
+          modelParts.push({
+            functionCall: { name: fc.name, args: fc.args ?? {}, id: fc.id },
+          } as Part);
+        }
+      }
+
+      if (!calls.length) {
+        contents.push({
+          role: "user",
+          parts: [
+            {
+              text: `Empty reply. Call write_html once for id="${target.id}" filename="${target.filename}" with the full HTML document.`,
+            },
+          ],
+        });
+        continue;
+      }
+
+      contents.push({ role: "model", parts: modelParts.length ? modelParts : candidateParts });
+      const responseParts: Part[] = [];
+      let scrubMarkup = false;
+      for (const fc of calls) {
+        const name = fc.name ?? "";
+        const args = (fc.args ?? {}) as Record<string, unknown>;
+        opts.onStatus?.(`Executing tool ${name}…`);
+        let response: Record<string, unknown>;
+        try {
+          response = await opts.onTool(name, args);
+          if (STAGED_MARKUP_TOOLS.has(name) && response.ok !== false) scrubMarkup = true;
+        } catch (err) {
+          if (isCancelledError(err) || isPlatformFaultError(err)) throw err;
+          response = { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+        responseParts.push({
+          functionResponse: { name, id: fc.id, response },
+        } as Part);
+      }
+      contents.push({ role: "user", parts: responseParts });
+      if (scrubMarkup) {
+        for (let iContent = 0; iContent < contents.length; iContent++) {
+          const turn = contents[iContent];
+          if (turn?.role !== "model" || !turn.parts?.length) continue;
+          contents[iContent] = { role: "model", parts: scrubStagedMarkupArgs(turn.parts) };
+        }
+      }
+
+      const wroteTarget = calls.some(
+        (fc) => fc.name === "write_html" && writeHtmlMatchesTarget((fc.args ?? {}) as Record<string, unknown>, target),
+      );
+      if (wroteTarget) {
+        landed = true;
+        break;
+      }
+      contents.push({
+        role: "user",
+        parts: [
+          {
+            text: `That write_html was not for id="${target.id}" / "${target.filename}". Call write_html once for that exact id and filename.`,
+          },
+        ],
+      });
+    }
+    if (!landed) {
+      throw new Error(`${label} did not write_html for ${target.filename} after ${perHtmlAttempts} attempts`);
+    }
+  }
+
+  contents.push({
+    role: "user",
+    parts: [
+      {
+        text: `All HTML pages are staged via write_html. Reply with the JSON object only — one deliverable per planned file, kind "html", matching ids and filenames, omit files content (or leave files empty). No more tool calls.`,
+      },
+    ],
+  });
+
+  let emptyStreak = 0;
+  for (let round = 0; round < 4; round++) {
+    opts.onStatus?.(`${label} composing thin HTML JSON…`);
+    const result = await generateContentBounded(
+      `${label} composing thin HTML JSON`,
+      () =>
+        ai.models.generateContent({
+          model,
+          contents,
+          config: {
+            systemInstruction: system,
+            tools: [{ functionDeclarations: writeHtmlTools }],
+            toolConfig: {
+              functionCallingConfig: { mode: FunctionCallingConfigMode.NONE },
+            },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+          },
+        }),
+      opts.onStatus,
+    );
+    const text = (result.text ?? "").trim();
+    if (text) return text;
+    emptyStreak += 1;
+    if (emptyStreak >= 3) {
+      throw new Error(`${label} returned no JSON after staged HTML`);
+    }
+    contents.push({
+      role: "user",
+      parts: [
+        {
+          text: "Your previous reply was empty. Reply with the JSON object only (thin html deliverables, no tool calls).",
+        },
+      ],
+    });
+  }
+  throw new Error(`${label} guided HTML session ended without JSON`);
 }
