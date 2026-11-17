@@ -12,8 +12,10 @@ import {
 } from "../autocook/argonMediaTools";
 import {
   brainCompletion,
+  brainGuidedWriteHtmlThenJson,
   brainGuidedWriteSvgThenJson,
   brainWithTools,
+  type GuidedHtmlTarget,
   type GuidedSvgTarget,
 } from "./geminiBrain";
 import { BRAIN_MODEL } from "./constants";
@@ -48,6 +50,32 @@ export function plannedSvgTargets(items: PlannedDeliverable[]): GuidedSvgTarget[
     });
   }
   return out;
+}
+
+/** Planned HTML files for guided write_html (HTML-only cooks). */
+export function plannedHtmlTargets(items: PlannedDeliverable[]): GuidedHtmlTarget[] {
+  const out: GuidedHtmlTarget[] = [];
+  for (const [index, item] of items.entries()) {
+    const kind = String(item.deliverable ?? "").trim().toLowerCase();
+    if (kind !== "html" && kind !== "webpage" && kind !== "website") continue;
+    const filename = String(item.filename ?? "").trim() || `page_${index + 1}.html`;
+    const id =
+      String(item.id ?? "").trim() || path.basename(filename, path.extname(filename)) || `html_${index + 1}`;
+    out.push({
+      id,
+      filename,
+      note: String(item.note ?? "").trim() || undefined,
+    });
+  }
+  return out;
+}
+
+function planIsHtmlOnly(items: PlannedDeliverable[]): boolean {
+  if (!items.length) return false;
+  return items.every((item) => {
+    const kind = String(item.deliverable ?? "").trim().toLowerCase();
+    return kind === "html" || kind === "webpage" || kind === "website";
+  });
 }
 
 export function planSystem(label: "Argon" | "Carbon"): string {
@@ -233,15 +261,16 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
     },
   };
 
-  const svgTargets = plannedSvgTargets(plan?.deliverables ?? []);
+  const planned = plan?.deliverables ?? [];
+  const svgTargets = plannedSvgTargets(planned);
+  const htmlTargets = plannedHtmlTargets(planned);
   const onBrainStatus = (msg: string) => {
     void updateRun(run.id, { error: msg });
   };
   const onBrainTool = (name: string, args: Record<string, unknown>) =>
     executeArgonMediaTool(name, args, toolCtx);
 
-  // Multi-SVG: one write_svg per turn in the same session, then thin JSON.
-  // Free-form optional tools for ordinary / single-SVG tasks.
+  // Multi-SVG / HTML-only: forced write_* then thin JSON. Else free-form optional tools.
   let text: string;
   if (svgTargets.length >= 2) {
     text = await brainGuidedWriteSvgThenJson({
@@ -249,6 +278,16 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
       system,
       userParts,
       svgTargets,
+      tools: TASK_OPTIONAL_TOOLS,
+      onStatus: onBrainStatus,
+      onTool: onBrainTool,
+    });
+  } else if (planIsHtmlOnly(planned) && htmlTargets.length >= 1) {
+    text = await brainGuidedWriteHtmlThenJson({
+      model,
+      system,
+      userParts,
+      htmlTargets,
       tools: TASK_OPTIONAL_TOOLS,
       onStatus: onBrainStatus,
       onTool: onBrainTool,
