@@ -27,8 +27,10 @@ import { weightFromDeliverables, type PlannedDeliverable } from "./taskWeight";
 import { buildComposition, composeInstructions, parseComposition } from "./composition";
 import { enqueueJob, updateRun, upsertAsset, type RunRow } from "../db";
 
-/** Optional in-session tools for large SVG (and similar) payloads — model may ignore them. */
-const TASK_OPTIONAL_TOOLS = ARGON_MEDIA_TOOL_DECLARATIONS.filter((tool) => tool.name === "write_svg");
+/** Optional in-session tools for large SVG/HTML payloads — model may ignore them. */
+const TASK_OPTIONAL_TOOLS = ARGON_MEDIA_TOOL_DECLARATIONS.filter(
+  (tool) => tool.name === "write_svg" || tool.name === "write_html",
+);
 
 /** Planned SVG files with stable ids/filenames for guided write_svg. */
 export function plannedSvgTargets(items: PlannedDeliverable[]): GuidedSvgTarget[] {
@@ -152,6 +154,24 @@ function collectStagedSvg(
   return stagedSvg;
 }
 
+function collectStagedHtml(
+  toolCtx: MediaToolContext,
+  filesByName: Map<string, string>,
+): Map<string, { content: string; path: string }> {
+  const stagedHtml = new Map<string, { content: string; path: string }>();
+  for (const staged of toolCtx.staged.values()) {
+    if (staged.format !== "html" || !fs.existsSync(staged.absPath)) continue;
+    const content = fs.readFileSync(staged.absPath, "utf8");
+    const entry = { content, path: staged.htmlPath?.trim() || "index.html" };
+    stagedHtml.set(staged.id, entry);
+    stagedHtml.set(staged.filename, entry);
+    stagedHtml.set(path.basename(staged.filename), entry);
+    stagedHtml.set(path.basename(staged.filename).toLowerCase(), entry);
+    filesByName.set(path.basename(staged.filename).toLowerCase(), staged.absPath);
+  }
+  return stagedHtml;
+}
+
 /** Plan step. Argon names the files. That list is the generation queue weight. */
 export async function jobArgonPlan(run: RunRow): Promise<void> {
   const dir = runDir(run.id);
@@ -247,15 +267,16 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
   }
 
   let stagedSvg = collectStagedSvg(toolCtx, filesByName);
+  let stagedHtml = collectStagedHtml(toolCtx, filesByName);
 
   let composition;
   try {
-    composition = parseComposition(text, { stagedSvg });
+    composition = parseComposition(text, { stagedSvg, stagedHtml });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     text = await brainWithTools({
       model,
-      system: `${system}\n\nThe previous reply could not be built (${message}). Reply with the JSON object only. You may call write_svg again if needed.`,
+      system: `${system}\n\nThe previous reply could not be built (${message}). Reply with the JSON object only. You may call write_svg or write_html again if needed.`,
       user: run.initial_prompt,
       userParts: [
         ...userParts,
@@ -267,7 +288,8 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
       onTool: onBrainTool,
     });
     stagedSvg = collectStagedSvg(toolCtx, filesByName);
-    composition = parseComposition(text, { stagedSvg });
+    stagedHtml = collectStagedHtml(toolCtx, filesByName);
+    composition = parseComposition(text, { stagedSvg, stagedHtml });
   }
   const compositionPath = path.join(dir, "argon_composition.json");
   fs.writeFileSync(compositionPath, JSON.stringify(composition, null, 2));

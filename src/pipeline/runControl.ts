@@ -8,8 +8,8 @@
  * - PlatformFaultError → graceful fail (or recover without changing brain intent).
  */
 
-/** Inferred from live generation: brain rounds with tools/thinking often 2–6m; hard ceiling. */
-export const BRAIN_ROUND_TIMEOUT_MS = Number(process.env.BRAIN_ROUND_TIMEOUT_MS) || 8 * 60_000;
+/** Inferred from live generation: brain rounds with tools/thinking often 2–6m; Carbon HTML can sit longer. */
+export const BRAIN_ROUND_TIMEOUT_MS = Number(process.env.BRAIN_ROUND_TIMEOUT_MS) || 13 * 60_000;
 /** Image model can sit before first byte; keep below orphan window. */
 export const IMAGE_GEN_TIMEOUT_MS = Number(process.env.IMAGE_GEN_TIMEOUT_MS) || 5 * 60_000;
 /** Omni submit (also used as fallback if geminiOmni local const missing). */

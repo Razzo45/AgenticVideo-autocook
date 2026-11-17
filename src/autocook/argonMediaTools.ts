@@ -167,23 +167,44 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["id", "svg", "filename"],
     },
   },
+  {
+    name: "write_html",
+    description:
+      "Register a full HTML document the brain authored (unchanged). Prefer when the page is large; then omit file contents in the JSON and match id/filename.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        id: { type: Type.STRING },
+        html: { type: Type.STRING, description: "Full HTML document." },
+        filename: { type: Type.STRING, description: "e.g. index.html or Site.html" },
+        path: {
+          type: Type.STRING,
+          description: "Path inside the HTML package, default index.html",
+        },
+      },
+      required: ["id", "html", "filename"],
+    },
+  },
 ];
 
 export type StagedMedia = {
   id: string;
-  format: HtmlMediaAsset["format"];
+  format: HtmlMediaAsset["format"] | "html";
   filename: string;
   absPath: string;
   embed: "path" | "data_uri";
   mime: string;
   /** Set for png/svg when embed=data_uri or when caller needs inline. */
   dataUri?: string;
+  /** Package-relative path for write_html (e.g. index.html). */
+  htmlPath?: string;
 };
 
-function mimeFor(format: HtmlMediaAsset["format"]): string {
+function mimeFor(format: StagedMedia["format"]): string {
   if (format === "png") return "image/png";
   if (format === "svg") return "image/svg+xml";
   if (format === "mp4") return "video/mp4";
+  if (format === "html") return "text/html; charset=utf-8";
   return "audio/wav";
 }
 
@@ -653,6 +674,34 @@ export async function executeArgonMediaTool(
       embed,
       placeholder: `{{asset:${id}}}`,
       hint: `Use {{asset:${id}}} in HTML (path or data URI per embed).`,
+    };
+  }
+
+  if (name === "write_html") {
+    const filename = claimRel(ctx, String(args.filename ?? `${id}.html`), id);
+    const html = String(args.html ?? "").trim();
+    if (!html) throw new Error("write_html: html required");
+    const htmlPath = safeRel(String(args.path ?? "index.html").trim() || "index.html");
+    ctx.onStatus?.(toolStatus(ctx, `write_html (${id})…`));
+    const absPath = path.join(ctx.stagingDir, filename);
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    fs.writeFileSync(absPath, html, "utf8");
+    remember(ctx, {
+      id,
+      format: "html",
+      filename,
+      absPath,
+      embed: "path",
+      mime: "text/html; charset=utf-8",
+      htmlPath,
+    });
+    return {
+      ok: true,
+      id,
+      filename,
+      path: htmlPath,
+      mime: "text/html; charset=utf-8",
+      hint: `In the JSON use kind "html" with the same id and filename; omit files content (or leave files empty).`,
     };
   }
 
