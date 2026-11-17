@@ -102,7 +102,45 @@ describe("join_videos mixed audio", () => {
           },
           ctx,
         ),
-      /every clip must have audio, or none/i,
+      /audio keep requires every clip to have audio/i,
     );
   });
+
+  it("strips audio when brain asks for mute even if clips have audio", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "autocook-join-mute-"));
+    const stagingDir = path.join(root, "compose_media");
+    fs.mkdirSync(stagingDir, { recursive: true });
+    const a = path.join(root, "a.mp4");
+    const b = path.join(root, "b.mp4");
+    await makeClip(a, true);
+    await makeClip(b, true);
+
+    const ctx: MediaToolContext = {
+      stagingDir,
+      staged: new Map([
+        ["a", { id: "a", format: "mp4", filename: "a.mp4", absPath: a, embed: "path", mime: "video/mp4" }],
+        ["b", { id: "b", format: "mp4", filename: "b.mp4", absPath: b, embed: "path", mime: "video/mp4" }],
+      ]),
+      filesByName: new Map([
+        ["a.mp4", a],
+        ["b.mp4", b],
+      ]),
+      namedReferencesOnly: true,
+    };
+
+    const result = await executeArgonMediaTool(
+      "join_videos",
+      {
+        id: "joined-mute",
+        filename: "assets/joined-mute.mp4",
+        clips: ["a", "b"],
+        audio: "mute",
+      },
+      ctx,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.audio, "mute");
+    assert.equal(result.has_audio, false);
+  });
 });
+

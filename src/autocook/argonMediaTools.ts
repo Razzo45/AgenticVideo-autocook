@@ -103,7 +103,7 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "fit_video",
     description:
-      "Resize, pad, crop, trim, or loop an existing MP4. Does not regenerate the picture. Width and height are rounded to even pixels. duration_sec may be longer than 10 by looping, or shorter by trimming. contain pads, cover crops, stretch scales.",
+      "Resize, pad, crop, trim, or loop an existing MP4. Does not regenerate the picture. Width and height are rounded to even pixels. duration_sec may be longer than 10 by looping, or shorter by trimming. contain pads, cover crops, stretch scales. audio keep preserves source audio; mute strips it before encode.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -116,6 +116,10 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         duration_sec: { type: Type.NUMBER, description: "Output length. Longer than the source loops it." },
         fit: { type: Type.STRING, description: "contain, cover, or stretch. Default contain." },
         pad_color: { type: Type.STRING, description: "Hex color for contain padding, default 000000." },
+        audio: {
+          type: Type.STRING,
+          description: "keep (default) preserves source audio when present; mute strips audio before encode.",
+        },
       },
       required: ["id", "source", "filename"],
     },
@@ -123,7 +127,7 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "join_videos",
     description:
-      "Place existing MP4s one after another, in the order given. Each clip is padded to the first clip's frame size. Use this when the job is longer than one generate_video call.",
+      "Place existing MP4s one after another, in the order given. Each clip is padded to the first clip's frame size. Use this when the job is longer than one generate_video call. audio keep concatenates audio when every clip has it; mute strips audio.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -133,6 +137,10 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
           type: Type.ARRAY,
           items: { type: Type.STRING },
           description: "Staged ids or filenames, in play order.",
+        },
+        audio: {
+          type: Type.STRING,
+          description: "keep (default) or mute. Mixed audio across clips is rejected when keep.",
         },
       },
       required: ["id", "filename", "clips"],
@@ -251,6 +259,13 @@ function fitMode(value: unknown): "contain" | "cover" | "stretch" {
   const mode = String(value ?? "contain").trim().toLowerCase();
   if (mode === "cover" || mode === "stretch") return mode;
   return "contain";
+}
+
+/** Brain/platform intent — never invent mute from probes alone. */
+function audioMode(value: unknown): "keep" | "mute" {
+  const mode = String(value ?? "keep").trim().toLowerCase();
+  if (mode === "mute" || mode === "silent" || mode === "none" || mode === "strip") return "mute";
+  return "keep";
 }
 
 function padColor(value: unknown, fallback: string): string {
@@ -693,26 +708,33 @@ export async function executeArgonMediaTool(
     if (duration != null && (!Number.isFinite(duration) || duration <= 0 || duration > 600)) {
       throw new Error("duration_sec must be between 0 and 600");
     }
-    ctx.onStatus?.(toolStatus(ctx, `fit_video (${id}, ${outW}x${outH})…`));
+    const audio = audioMode(args.audio);
+    const keepAudio = audio === "keep" && probedIn.hasAudio;
+    ctx.onStatus?.(toolStatus(ctx, `fit_video (${id}, ${outW}x${outH}, audio ${audio})…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     const sourceDur = probedIn.duration ?? 0;
     const loop = duration != null && sourceDur > 0 && duration > sourceDur + 0.05;
+    const resizeNeeded =
+      outW !== evenPixels(probedIn.width || outW) ||
+      outH !== evenPixels(probedIn.height || outH) ||
+      duration != null ||
+      loop;
     const argsFfmpeg = [
       ...(loop ? ["-stream_loop", "-1"] : []),
       "-i",
       source,
-      "-vf",
-      `${scaleFilter(outW, outH, fit, padColor(args.pad_color, "000000"))},setsar=1`,
+      ...(resizeNeeded
+        ? ["-vf", `${scaleFilter(outW, outH, fit, padColor(args.pad_color, "000000"))},setsar=1`]
+        : []),
       ...(duration != null ? ["-t", duration.toFixed(3)] : []),
       "-c:v",
-      "libx264",
-      "-pix_fmt",
-      "yuv420p",
-      ...(probedIn.hasAudio
+      resizeNeeded ? "libx264" : "copy",
+      ...(resizeNeeded ? ["-pix_fmt", "yuv420p"] : []),
+      ...(keepAudio
         ? loop
-          ? ["-c:a", "aac", "-shortest"]
-          : ["-c:a", "aac"]
+          ? ["-c:a", resizeNeeded ? "aac" : "copy", "-shortest"]
+          : ["-c:a", resizeNeeded ? "aac" : "copy"]
         : ["-an"]),
     ];
     await withStatusHeartbeat(
@@ -731,6 +753,8 @@ export async function executeArgonMediaTool(
       height: probed.height,
       duration_sec: probed.duration,
       fit,
+      audio,
+      has_audio: probed.hasAudio,
       bytes: fs.statSync(absPath).size,
     };
   }
@@ -746,14 +770,19 @@ export async function executeArgonMediaTool(
     // Normalize fps — concat fails when Omni (often 24) meets plate footage (often 25).
     const fps = first.fps && first.fps > 0 ? Math.round(first.fps * 1000) / 1000 : 24;
     const probes = await Promise.all(sources.map((src) => probeSource(src)));
+    const audio = audioMode(args.audio);
     const audioCount = probes.filter((probe) => probe.hasAudio).length;
-    if (audioCount > 0 && audioCount < probes.length) {
+    let withAudio = false;
+    if (audio === "mute") {
+      withAudio = false;
+    } else if (audioCount > 0 && audioCount < probes.length) {
       throw new Error(
-        `join_videos: ${audioCount}/${probes.length} clips have audio — every clip must have audio, or none (mixed audio is not joined silently)`,
+        `join_videos: audio keep requires every clip to have audio, or none — got ${audioCount}/${probes.length}. Set audio to mute to strip, or give every clip audio.`,
       );
+    } else {
+      withAudio = audioCount === probes.length && audioCount > 0;
     }
-    const withAudio = audioCount === probes.length;
-    ctx.onStatus?.(toolStatus(ctx, `join_videos (${id}, ${clips.length} clips)…`));
+    ctx.onStatus?.(toolStatus(ctx, `join_videos (${id}, ${clips.length} clips, audio ${audio})…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     const filterComplex = buildJoinVideosFilter({
@@ -796,6 +825,8 @@ export async function executeArgonMediaTool(
       height: probed.height,
       duration_sec: probed.duration,
       clips: clips.length,
+      audio,
+      has_audio: probed.hasAudio,
       bytes: fs.statSync(absPath).size,
     };
   }
