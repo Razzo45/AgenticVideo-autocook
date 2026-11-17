@@ -10,7 +10,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { getDb, getRun, listRuns, type RunRow } from "../db";
+import { getDb, getRun, listRuns, runHasBusyJobs, updateRun, type RunRow } from "../db";
 import { RUNS_DIR, runDir } from "./paths";
 import { deleteRunPrefix, storageMode } from "./storage";
 import { reapGeminiFiles } from "./geminiStaging";
@@ -19,6 +19,8 @@ import { reapGeminiFiles } from "./geminiStaging";
 export const STAGING_IDLE_MS = Number(process.env.STAGING_IDLE_MS) || 5 * 60 * 60_000;
 /** Whole run (including download) expires after this since last interaction. */
 export const RUN_TTL_MS = Number(process.env.RUN_TTL_MS) || 24 * 60 * 60_000;
+/** Generating/queued with no job for this long → mark failed (worker lost mid-tool). */
+export const ORPHAN_GENERATING_MS = Number(process.env.ORPHAN_GENERATING_MS) || 10 * 60_000;
 
 const STAGING_NAMES = new Set([
   "inputs",
@@ -137,14 +139,40 @@ export async function deleteEntireRun(runId: string): Promise<void> {
 /**
  * Sweep finished / expired runs. Safe to call from the worker every few minutes.
  */
+export async function failOrphanGeneratingRuns(now = Date.now()): Promise<number> {
+  let failed = 0;
+  let runs: RunRow[] = [];
+  try {
+    runs = await listRuns();
+  } catch {
+    return 0;
+  }
+  for (const run of runs) {
+    if (run.status !== "generating" && run.status !== "queued") continue;
+    const age = now - lastTouchMs(run);
+    if (age < ORPHAN_GENERATING_MS) continue;
+    if (await runHasBusyJobs(run.id)) continue;
+    await updateRun(run.id, {
+      status: "failed",
+      gate: null,
+      error:
+        "Stopped: cook was generating with no worker job (often a hung fit_image/ffmpeg). Retry the cook.",
+    });
+    failed += 1;
+  }
+  return failed;
+}
+
 export async function runHygieneSweep(): Promise<{
   stagingPurged: number;
   runsDeleted: number;
   geminiCulled: number;
+  orphansFailed?: number;
 }> {
   let stagingPurged = 0;
   let runsDeleted = 0;
   const now = Date.now();
+  const orphansFailed = await failOrphanGeneratingRuns(now);
 
   let runs: RunRow[] = [];
   try {
@@ -193,5 +221,5 @@ export async function runHygieneSweep(): Promise<{
   }
 
   const { culled } = await reapGeminiFiles();
-  return { stagingPurged, runsDeleted, geminiCulled: culled };
+  return { stagingPurged, runsDeleted, geminiCulled: culled, orphansFailed };
 }

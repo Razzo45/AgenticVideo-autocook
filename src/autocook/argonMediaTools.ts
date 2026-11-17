@@ -271,15 +271,27 @@ function scaleFilter(width: number, height: number, fit: "contain" | "cover" | "
   return `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${color}`;
 }
 
-async function ffmpeg(args: string[]): Promise<void> {
+const FIT_IMAGE_TIMEOUT_MS = 60_000;
+const FIT_VIDEO_TIMEOUT_MS = 3 * 60_000;
+const JOIN_VIDEOS_TIMEOUT_MS = 10 * 60_000;
+const PROBE_TIMEOUT_MS = 30_000;
+
+async function ffmpeg(args: string[], timeoutMs = FIT_VIDEO_TIMEOUT_MS): Promise<void> {
   try {
     await execFileAsync("ffmpeg", ["-hide_banner", "-nostdin", "-y", ...args], {
       maxBuffer: 32 * 1024 * 1024,
       windowsHide: true,
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
     });
   } catch (err) {
-    const execErr = err as { message?: string; stderr?: string | Buffer };
+    const execErr = err as { message?: string; stderr?: string | Buffer; killed?: boolean; code?: string | number };
+    if (execErr.killed || execErr.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      throw new Error(`ffmpeg timed out or overflowed after ${Math.round(timeoutMs / 1000)}s`);
+    }
     const stderr = typeof execErr.stderr === "string" ? execErr.stderr : execErr.stderr?.toString?.() ?? "";
+    const timedOut = /TIMEDOUT|timeout/i.test(execErr.message ?? "") || /SIGKILL|killed/i.test(stderr);
+    if (timedOut) throw new Error(`ffmpeg timed out after ${Math.round(timeoutMs / 1000)}s`);
     const tail = stderr
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -292,14 +304,36 @@ async function ffmpeg(args: string[]): Promise<void> {
 }
 
 /** Write to a temp file so ffmpeg can read and replace the same path. */
-async function ffmpegOut(outPath: string, args: string[]): Promise<void> {
+async function ffmpegOut(outPath: string, args: string[], timeoutMs = FIT_VIDEO_TIMEOUT_MS): Promise<void> {
   const tmp = path.join(path.dirname(outPath), `.${process.pid}.${path.basename(outPath)}`);
   try {
-    await ffmpeg([...args, tmp]);
-    fs.renameSync(tmp, outPath);
+    await ffmpeg([...args, tmp], timeoutMs);
+    try {
+      fs.renameSync(tmp, outPath);
+    } catch (err) {
+      // Docker/S3 scratch can be cross-device — rename fails with EXDEV.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EXDEV") throw err;
+      fs.copyFileSync(tmp, outPath);
+      fs.rmSync(tmp, { force: true });
+    }
   } catch (err) {
     fs.rmSync(tmp, { force: true });
     throw err;
+  }
+}
+
+async function probeSource(abs: string): Promise<Awaited<ReturnType<typeof probeFile>>> {
+  try {
+    return await Promise.race([
+      probeFile(abs),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`ffprobe timed out after ${PROBE_TIMEOUT_MS / 1000}s`)), PROBE_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`cannot probe source: ${message.slice(0, 400)}`);
   }
 }
 
@@ -408,19 +442,33 @@ export async function executeArgonMediaTool(
     const height = positiveInt(args.height, "height", 8000);
     const fit = fitMode(args.fit);
     const source = resolveSource(ctx, String(args.source ?? args.source_id ?? ""));
+    const sourceStat = fs.statSync(source);
+    if (sourceStat.size < 32) throw new Error(`fit_image: source is empty (${path.basename(source)})`);
+    const sourceProbe = await probeSource(source);
+    if (!(sourceProbe.width > 0 && sourceProbe.height > 0)) {
+      throw new Error(`fit_image: source has no video/image frame (${path.basename(source)})`);
+    }
+    // A long video as "cover" used to hang live ffmpeg with no timeout. Cap the demux.
+    const looksStill = /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(source);
+    const isTimedMedia = !looksStill && (sourceProbe.duration ?? 0) > 0.2;
     ctx.onStatus?.(toolStatus(ctx, `fit_image (${id}, ${width}x${height} ${fit})…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
-    await ffmpegOut(absPath, [
-      "-i",
-      source,
-      "-vf",
-      scaleFilter(width, height, fit, padColor(args.pad_color, "FFFFFF")),
-      "-frames:v",
-      "1",
-    ]);
+    await ffmpegOut(
+      absPath,
+      [
+        ...(isTimedMedia ? ["-ss", "0", "-t", "1"] : []),
+        "-i",
+        source,
+        "-vf",
+        scaleFilter(width, height, fit, padColor(args.pad_color, "FFFFFF")),
+        "-frames:v",
+        "1",
+      ],
+      FIT_IMAGE_TIMEOUT_MS,
+    );
     const buf = fs.readFileSync(absPath);
-    const probed = await probeFile(absPath);
+    const probed = await probeSource(absPath);
     remember(ctx, {
       id,
       format: "png",
@@ -520,7 +568,7 @@ export async function executeArgonMediaTool(
   if (name === "fit_video") {
     const filename = claimRel(ctx, String(args.filename ?? `assets/${id}.mp4`), id);
     const source = resolveSource(ctx, String(args.source ?? args.source_id ?? ""));
-    const probedIn = await probeFile(source);
+    const probedIn = await probeSource(source);
     const fit = fitMode(args.fit);
     let width = Number(args.width);
     let height = Number(args.height);
@@ -565,8 +613,8 @@ export async function executeArgonMediaTool(
       "yuv420p",
       ...(probedIn.hasAudio ? ["-c:a", "aac"] : ["-an"]),
     ];
-    await ffmpegOut(absPath, argsFfmpeg);
-    const probed = await probeFile(absPath);
+    await ffmpegOut(absPath, argsFfmpeg, FIT_VIDEO_TIMEOUT_MS);
+    const probed = await probeSource(absPath);
     remember(ctx, { id, format: "mp4", filename, absPath, embed: "path", mime: "video/mp4" });
     return {
       ok: true,
@@ -586,12 +634,12 @@ export async function executeArgonMediaTool(
     const clips = Array.isArray(args.clips) ? args.clips.map((clip) => String(clip)) : [];
     if (clips.length < 2 || clips.length > 12) throw new Error("join_videos needs 2–12 clips");
     const sources = clips.map((clip) => resolveSource(ctx, clip));
-    const first = await probeFile(sources[0]!);
+    const first = await probeSource(sources[0]!);
     const outW = evenPixels(first.width || 1280);
     const outH = evenPixels(first.height || 720);
     // Normalize fps — concat fails when Omni (often 24) meets plate footage (often 25).
     const fps = first.fps && first.fps > 0 ? Math.round(first.fps * 1000) / 1000 : 24;
-    const probes = await Promise.all(sources.map((src) => probeFile(src)));
+    const probes = await Promise.all(sources.map((src) => probeSource(src)));
     const withAudio = probes.every((probe) => probe.hasAudio);
     ctx.onStatus?.(toolStatus(ctx, `join_videos (${id}, ${clips.length} clips)…`));
     const absPath = path.join(ctx.stagingDir, filename);
@@ -608,21 +656,25 @@ export async function executeArgonMediaTool(
     const concat = withAudio
       ? `${vLabels}${aLabels}concat=n=${sources.length}:v=1:a=1[v][a]`
       : `${vLabels}concat=n=${sources.length}:v=1:a=0[v]`;
-    await ffmpegOut(absPath, [
-      ...sources.flatMap((src) => ["-i", src]),
-      "-filter_complex",
-      `${chains.join(";")};${concat}`,
-      "-map",
-      "[v]",
-      ...(withAudio ? ["-map", "[a]", "-c:a", "aac", "-ar", "48000", "-ac", "2"] : ["-an"]),
-      "-c:v",
-      "libx264",
-      "-pix_fmt",
-      "yuv420p",
-      "-r",
-      String(fps),
-    ]);
-    const probed = await probeFile(absPath);
+    await ffmpegOut(
+      absPath,
+      [
+        ...sources.flatMap((src) => ["-i", src]),
+        "-filter_complex",
+        `${chains.join(";")};${concat}`,
+        "-map",
+        "[v]",
+        ...(withAudio ? ["-map", "[a]", "-c:a", "aac", "-ar", "48000", "-ac", "2"] : ["-an"]),
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        String(fps),
+      ],
+      JOIN_VIDEOS_TIMEOUT_MS,
+    );
+    const probed = await probeSource(absPath);
     remember(ctx, { id, format: "mp4", filename, absPath, embed: "path", mime: "video/mp4" });
     return {
       ok: true,
