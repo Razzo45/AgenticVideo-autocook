@@ -1,5 +1,5 @@
 /**
- * Inspect whether a finished run obeyed Argon-owns-plan / Omni-gen / plan-only post.
+ * Inspect whether a finished run obeyed brain-owns-plan / Omni-gen / plan-only post.
  * Usage: npx tsx scripts/inspect-ownership.ts <runId>
  */
 import fs from "node:fs";
@@ -62,7 +62,7 @@ async function main() {
     const shots = script?.shots ?? [];
     findings.push({
       ok: shots.length > 0,
-      msg: `Argon scenes=${shots.length} durations=[${shots.map((s) => s.duration).join(",")}] delivery_fps=${script?.delivery_fps ?? "∅"} res=${script?.delivery_resolution ?? "∅"}`,
+      msg: `plan scenes=${shots.length} durations=[${shots.map((s) => s.duration).join(",")}] delivery_fps=${script?.delivery_fps ?? "∅"} res=${script?.delivery_resolution ?? "∅"}`,
     });
     const callouts = shots.filter((s) => s.callout?.trim());
     const logos = shots.filter((s) => s.logo_bug === true);
@@ -90,7 +90,7 @@ async function main() {
         ok: !wrapped && !hasTargetLen,
         msg: wrapped || hasTargetLen
           ? `PLATFORM WRAPPER still in ${path.basename(path.dirname(p))}/${path.basename(p)}`
-          : `Omni prompt clean (Argon-owned) ${path.basename(path.dirname(p))}/${path.basename(p)} (${text.length} chars)`,
+          : `Omni prompt clean (brain-owned) ${path.basename(path.dirname(p))}/${path.basename(p)} (${text.length} chars)`,
       });
     }
 
@@ -104,7 +104,7 @@ async function main() {
       });
       findings.push({
         ok: fpsOk,
-        msg: fpsOk ? "final fps matches Argon delivery_fps (or unset)" : `fps mismatch plan=${wantFps} got=${pr.fps}`,
+        msg: fpsOk ? "final fps matches plan delivery_fps (or unset)" : `fps mismatch plan=${wantFps} got=${pr.fps}`,
       });
     } else {
       findings.push({ ok: run.status !== "exported", msg: `final missing (status=${run.status})` });
@@ -116,8 +116,8 @@ async function main() {
       findings.push({
         ok: files.length > 0,
         msg: files.length
-          ? `post applied Argon callouts (${files.join(", ")})`
-          : "Argon asked callouts but callouts/ empty — overlay may not have run",
+          ? `post applied planned callouts (${files.join(", ")})`
+          : "plan asked callouts but callouts/ empty — overlay may not have run",
       });
     }
   }

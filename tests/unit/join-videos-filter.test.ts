@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildJoinVideosFilter } from "../../src/autocook/argonMediaTools";
+import { buildJoinVideosFilter } from "../../src/autocook/mediaTools";
 
 describe("join_videos filter graph", () => {
   it("interleaves video and audio pads for concat when every clip has audio", () => {

@@ -5,7 +5,7 @@ import { ThemeSync } from "@/app/components/ThemeToggle";
 
 export const metadata = {
   title: "Wirestock Autocook",
-  description: "Paste a task, COOK, download the master — Argon + Omni on Gemini",
+  description: "Paste a task, COOK, download the master — Gemini brain + Omni",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

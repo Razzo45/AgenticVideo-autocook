@@ -108,6 +108,24 @@ export function isCancelledError(err: unknown): boolean {
   return /cook cancelled|RunCancelledError|aborted/i.test(msg);
 }
 
+/** Ticker only — does not time out or abort the work. */
+export async function withStatusHeartbeat<T>(
+  work: Promise<T>,
+  opts: { label: string; onStatus?: (msg: string) => void; heartbeatMs?: number },
+): Promise<T> {
+  if (!opts.onStatus) return work;
+  const started = Date.now();
+  const heartbeat = setInterval(() => {
+    const sec = Math.round((Date.now() - started) / 1000);
+    opts.onStatus?.(`${opts.label} (waiting ${sec}s)…`);
+  }, opts.heartbeatMs ?? 20_000);
+  try {
+    return await work;
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
 /**
  * Bound any async platform wait. Honors AbortSignal. Does not invent brain content —
  * only fails the wait so the cook can self-heal or stop loudly.

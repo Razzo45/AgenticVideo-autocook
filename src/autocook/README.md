@@ -4,17 +4,17 @@ Importable control plane for the wider team. **Next.js / HITL is optional** — 
 
 ## Contract
 
-1. **Argon** owns the task plan (structure, prompts, file contents, export flags).
-2. **Generators** (Omni / TTS / Lyria / Gemini image) only execute what Argon asked.
+1. **The brain** owns the task plan (structure, prompts, file contents, export flags). Task cooks may use Argon or Carbon.
+2. **Generators** (Omni / TTS / Lyria / Gemini image) only execute what the brain asked.
 3. **Platform** only posts/assembles/exports steps marked on the plan — no creative wrappers.
 
 ## Brain
 
-- Planning uses **`gemini-4-argon`** via `GEMINI_API_KEY` only.
+- Default planning model is **`gemini-4-argon`** via `GEMINI_API_KEY`. Task cooks may tag Carbon (`gemini-4-carbon`).
 - Video generation: Omni (`PRODUCT_VIDEO_MODEL`).
 - Image PNG: `PRODUCT_IMAGE_MODEL` or `gemini-2.5-flash-image`.
-- SVG / HTML / PPTX IR: Argon emits bytes/markup; platform writes or packs OOXML.
-- Document cooks give Argon **media tools** (`generate_image`, `generate_video`, `write_svg`) so it can inline stills/clips the same way gemini.google.com does — platform executes tools with Argon prompts only, then rewrites `{{asset:id}}` to path or data URI.
+- SVG / HTML / PPTX IR: the brain emits bytes/markup; platform writes or packs OOXML.
+- Document cooks give the brain **media tools** (`generate_image`, `generate_video`, `write_svg`) so it can inline stills/clips the same way gemini.google.com does — platform executes tools with those prompts only, then rewrites `{{asset:id}}` to path or data URI.
 
 ## API
 
@@ -34,12 +34,12 @@ const result = await runAutocook({
 
 | Mode | Plan | Generate | Assemble / post |
 |------|------|----------|-----------------|
-| `video` | Argon `ScriptPlan` | Omni per shot | concat → master MP4 |
-| `audio` | Argon `AudioPlan` | TTS + Lyria via `createRun` | mix / dual WAV |
-| `html` | Argon files[] + media tools | write + embed assets | zip / screenshot / PDF |
-| `image` | Argon assets[] | PNG via Gemini image; SVG write | — |
-| `pptx` | Argon slide IR | OOXML + image slots | optional PDF via LibreOffice |
-| `pdf` | Argon chooses html\|pptx source | build source then export | LibreOffice / Chromium print |
+| `video` | brain `ScriptPlan` | Omni per shot | concat → master MP4 |
+| `audio` | brain `AudioPlan` | TTS + Lyria via `createRun` | mix / dual WAV |
+| `html` | brain files[] + media tools | write + embed assets | zip / screenshot / PDF |
+| `image` | brain assets[] | PNG via Gemini image; SVG write | — |
+| `pptx` | brain slide IR | OOXML + image slots | optional PDF via LibreOffice |
+| `pdf` | brain chooses html\|pptx source | build source then export | LibreOffice / Chromium print |
 
 ## Env
 
@@ -53,8 +53,8 @@ const result = await runAutocook({
 
 Claim logic:
 
-1. `argon_plan` is text. Argon names the files. That job can run while a deliverable task is generating.
-2. `argon_execute` is the deliverable queue. One of those runs at a time. Weight is the sum of the plan: image 10, svg 5, html 10, pdf 15, pptx 20, audio 20, video 30.
+1. `task_plan` is text. The brain names the files. That job can run while a deliverable task is generating.
+2. `task_execute` is the deliverable queue. One of those runs at a time. Weight is the sum of the plan: image 10, svg 5, html 10, pdf 15, pptx 20, audio 20, video 30.
 3. A run that already finished a generation stage is claimed before a new deliverable task. Among new tasks, lower `task_weight` goes first.
 4. The worker allows the running deliverable task plus one plan read (`maxParallelRuns: 2`).
 
@@ -65,7 +65,7 @@ Railway: web + `tsx src/worker.ts` on the same volume.
 Job admission runs one deliverable task at a time. A text plan can be read in the other slot. Gemini calls inside a job still go through **GDP AdaptiveAdmission** (`geminiAdmission.ts`), retuned for media:
 
 - Process ceiling **2** (GDP text often 16–96) · floor **1** · owner ceiling **1**
-- Lanes: `argon` / `image` / `omni` / `files`
+- Lanes: `brain` / `image` / `omni` / `files`
 - On 429: AIMD halve + Retry-After cooldown + paced retry (no fan-out storm)
 - `requestId` on `POST /api/cook` is idempotent (same key → same run, no double enqueue)
 

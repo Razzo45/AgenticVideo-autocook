@@ -1,38 +1,46 @@
 /**
- * One Argon session for the operator prompt and files.
- * Argon writes each deliverable in one reply. The platform builds the files.
+ * One brain session for the operator prompt and files.
+ * The brain writes each deliverable in one reply. The platform builds the files.
  */
 import fs from "node:fs";
 import path from "node:path";
 import type { Part } from "@google/genai";
 import {
-  ARGON_MEDIA_TOOL_DECLARATIONS,
-  executeArgonMediaTool,
+  MEDIA_TOOL_DECLARATIONS,
+  executeMediaTool,
   type MediaToolContext,
-} from "../autocook/argonMediaTools";
+} from "../autocook/mediaTools";
 import {
   brainCompletion,
-  brainGuidedWriteHtmlThenJson,
   brainGuidedWriteSvgThenJson,
   brainWithTools,
   type GuidedHtmlTarget,
   type GuidedSvgTarget,
 } from "./geminiBrain";
 import { BRAIN_MODEL } from "./constants";
-import { brainLabel } from "./brainChoice";
+import { brainLabel, type BrainLabel } from "./brainChoice";
 import { hydrateRunInputs } from "./inputs";
-import { classifyAttachment } from "./attachForArgon";
+import { classifyAttachment } from "./attachForBrain";
 import { runDir } from "./paths";
 import { stageLocalPath } from "./geminiStaging";
 import { ensureAbsRunFile, persistRunFile } from "./storage";
 import { weightFromDeliverables, type PlannedDeliverable } from "./taskWeight";
-import { buildComposition, composeInstructions, parseComposition } from "./composition";
+import {
+  buildComposition,
+  composeInstructions,
+  parseComposition,
+  type Composition,
+} from "./composition";
 import { enqueueJob, updateRun, upsertAsset, type RunRow } from "../db";
+import {
+  TASK_EXECUTE_JOB,
+  ensureTaskPlanFile,
+  taskCompositionWritePath,
+  taskPlanWritePath,
+} from "./taskJobs";
 
-/** Optional in-session tools for large SVG/HTML payloads — model may ignore them. */
-const TASK_OPTIONAL_TOOLS = ARGON_MEDIA_TOOL_DECLARATIONS.filter(
-  (tool) => tool.name === "write_svg" || tool.name === "write_html",
-);
+/** Optional in-session tools for large SVG payloads — model may ignore them. */
+const TASK_OPTIONAL_TOOLS = MEDIA_TOOL_DECLARATIONS.filter((tool) => tool.name === "write_svg");
 
 /** Planned SVG files with stable ids/filenames for guided write_svg. */
 export function plannedSvgTargets(items: PlannedDeliverable[]): GuidedSvgTarget[] {
@@ -52,7 +60,23 @@ export function plannedSvgTargets(items: PlannedDeliverable[]): GuidedSvgTarget[
   return out;
 }
 
-/** Planned HTML files for guided write_html (HTML-only cooks). */
+function isSvgDeliverable(item: PlannedDeliverable): boolean {
+  return String(item.deliverable ?? "").trim().toLowerCase() === "svg";
+}
+
+/**
+ * Execute in plan order: all SVGs as one guided session when there are 2+,
+ * every other planned file as its own JSON call (no mixed html+video ping).
+ */
+export function plannedExecuteSlices(items: PlannedDeliverable[]): PlannedDeliverable[][] {
+  const svgs = items.filter(isSvgDeliverable);
+  if (svgs.length >= 2) {
+    return [svgs, ...items.filter((item) => !isSvgDeliverable(item)).map((item) => [item])];
+  }
+  return items.map((item) => [item]);
+}
+
+/** Planned HTML files (ids/filenames). Execute still puts page bodies in JSON. */
 export function plannedHtmlTargets(items: PlannedDeliverable[]): GuidedHtmlTarget[] {
   const out: GuidedHtmlTarget[] = [];
   for (const [index, item] of items.entries()) {
@@ -70,43 +94,27 @@ export function plannedHtmlTargets(items: PlannedDeliverable[]): GuidedHtmlTarge
   return out;
 }
 
-function planIsHtmlOnly(items: PlannedDeliverable[]): boolean {
-  if (!items.length) return false;
-  return items.every((item) => {
-    const kind = String(item.deliverable ?? "").trim().toLowerCase();
-    return kind === "html" || kind === "webpage" || kind === "website";
-  });
-}
-
-export function planSystem(label: "Argon" | "Carbon"): string {
+export function planSystem(label: BrainLabel): string {
   return `You are ${label}. Read the operator message and the attached files.
 Reply with JSON only:
 {"deliverables":[{"deliverable":"image"|"svg"|"html"|"pdf"|"pptx"|"audio"|"video","id":"string","filename":"string","note":"what this file is"}]}
 One object per file you will produce. Do not generate the files in this step. Do not rewrite the operator message.`;
 }
 
-function runBrain(run: RunRow): { model: string; label: "Argon" | "Carbon" } {
+function runBrain(run: RunRow): { model: string; label: BrainLabel } {
   const model = run.script_model?.trim() || BRAIN_MODEL;
   return { model, label: brainLabel(model) };
 }
 
 export type TaskDeliverable = { id: string; label: string; path: string };
 
-export type ArgonPlan = { deliverables: PlannedDeliverable[] };
+export type TaskPlan = { deliverables: PlannedDeliverable[] };
 
-function planPath(runId: string): string {
-  return path.join(runDir(runId), "argon_plan.json");
-}
-
-export async function loadArgonPlan(runId: string): Promise<ArgonPlan | null> {
-  const file = planPath(runId);
+export async function loadTaskPlan(runId: string): Promise<TaskPlan | null> {
+  const file = await ensureTaskPlanFile(runId);
+  if (!file) return null;
   try {
-    await ensureAbsRunFile(file);
-  } catch {
-    /* local copy, or the plan never landed in the bucket */
-  }
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as ArgonPlan;
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as TaskPlan;
     if (!Array.isArray(parsed.deliverables)) return null;
     return parsed;
   } catch {
@@ -114,7 +122,7 @@ export async function loadArgonPlan(runId: string): Promise<ArgonPlan | null> {
   }
 }
 
-export function parseArgonPlan(text: string): ArgonPlan {
+export function parseTaskPlan(text: string): TaskPlan {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const raw = fenced ? fenced[1] : text;
   const start = raw.indexOf("{");
@@ -200,8 +208,8 @@ function collectStagedHtml(
   return stagedHtml;
 }
 
-/** Plan step. Argon names the files. That list is the generation queue weight. */
-export async function jobArgonPlan(run: RunRow): Promise<void> {
+/** Plan step. The brain names the files. That list is the generation queue weight. */
+export async function jobTaskPlan(run: RunRow): Promise<void> {
   const dir = runDir(run.id);
   fs.mkdirSync(dir, { recursive: true });
   const { model, label } = runBrain(run);
@@ -214,12 +222,13 @@ export async function jobArgonPlan(run: RunRow): Promise<void> {
     userParts,
     json: true,
   });
-  const plan = parseArgonPlan(text);
-  fs.writeFileSync(planPath(run.id), JSON.stringify(plan, null, 2));
-  await persistRunFile(planPath(run.id));
+  const plan = parseTaskPlan(text);
+  const planFile = taskPlanWritePath(dir);
+  fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+  await persistRunFile(planFile);
   const schedule = weightFromDeliverables(plan.deliverables);
   const summary = schedule.parts.map((part) => `${part.count} ${part.deliverable}`).join(", ");
-  await enqueueJob(run.id, "argon_execute");
+  await enqueueJob(run.id, TASK_EXECUTE_JOB);
   await updateRun(run.id, {
     status: "queued",
     gate: null,
@@ -227,7 +236,7 @@ export async function jobArgonPlan(run: RunRow): Promise<void> {
   });
 }
 
-export async function jobArgonTask(run: RunRow): Promise<void> {
+export async function jobTaskExecute(run: RunRow): Promise<void> {
   const dir = runDir(run.id);
   fs.mkdirSync(dir, { recursive: true });
   const { model, label } = runBrain(run);
@@ -243,8 +252,9 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
 
   const { parts: userParts, placed } = await operatorParts(run);
   for (const [name, abs] of placed) filesByName.set(name, abs);
-  const plan = await loadArgonPlan(run.id);
-  const system = composeInstructions(plan?.deliverables ?? [], [...filesByName.keys()].sort(), label);
+  const plan = await loadTaskPlan(run.id);
+  const planned = plan?.deliverables ?? [];
+  const attachedNames = [...filesByName.keys()].sort();
   await updateRun(run.id, { status: "generating", gate: null, error: `${label} is writing the deliverables…` });
 
   const stagingDir = path.join(dir, "compose_media");
@@ -261,76 +271,95 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
     },
   };
 
-  const planned = plan?.deliverables ?? [];
+  const slices = plannedExecuteSlices(planned);
   const svgTargets = plannedSvgTargets(planned);
-  const htmlTargets = plannedHtmlTargets(planned);
   const onBrainStatus = (msg: string) => {
     void updateRun(run.id, { error: msg });
   };
   const onBrainTool = (name: string, args: Record<string, unknown>) =>
-    executeArgonMediaTool(name, args, toolCtx);
+    executeMediaTool(name, args, toolCtx);
 
-  // Multi-SVG / HTML-only: forced write_* then thin JSON. Else free-form optional tools.
-  let text: string;
-  if (svgTargets.length >= 2) {
-    text = await brainGuidedWriteSvgThenJson({
-      model,
-      system,
-      userParts,
-      svgTargets,
-      tools: TASK_OPTIONAL_TOOLS,
-      onStatus: onBrainStatus,
-      onTool: onBrainTool,
-    });
-  } else if (planIsHtmlOnly(planned) && htmlTargets.length >= 1) {
-    text = await brainGuidedWriteHtmlThenJson({
-      model,
-      system,
-      userParts,
-      htmlTargets,
-      tools: TASK_OPTIONAL_TOOLS,
-      onStatus: onBrainStatus,
-      onTool: onBrainTool,
-    });
-  } else {
-    text = await brainWithTools({
-      model,
-      system,
-      user: run.initial_prompt,
-      userParts,
-      tools: TASK_OPTIONAL_TOOLS,
-      maxRounds: 16,
-      onStatus: onBrainStatus,
-      onTool: onBrainTool,
-    });
+  const merged: Composition["deliverables"] = [];
+  for (let sliceIndex = 0; sliceIndex < slices.length; sliceIndex++) {
+    const slice = slices[sliceIndex]!;
+    const system = composeInstructions(slice, attachedNames, label);
+    const names = slice.map((item) => item.filename || item.deliverable).join(", ");
+    const sliceLabel = `${label} ${sliceIndex + 1}/${slices.length} (${names})`;
+    const svgSlice = slice.length >= 2 && slice.every(isSvgDeliverable);
+
+    let text: string;
+    if (svgSlice) {
+      text = await brainGuidedWriteSvgThenJson({
+        model,
+        system,
+        userParts,
+        svgTargets,
+        tools: TASK_OPTIONAL_TOOLS,
+        onStatus: onBrainStatus,
+        onTool: onBrainTool,
+      });
+    } else {
+      onBrainStatus(`${sliceLabel}…`);
+      text = await brainCompletion({
+        model,
+        messages: [{ role: "system", content: system }],
+        userParts,
+        json: true,
+        onStatus: onBrainStatus,
+      });
+    }
+
+    const parseSlice = (raw: string) =>
+      parseComposition(raw, {
+        stagedSvg: collectStagedSvg(toolCtx, filesByName),
+        stagedHtml: collectStagedHtml(toolCtx, filesByName),
+      });
+
+    let piece: Composition;
+    try {
+      piece = parseSlice(text);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const ping = `${system}\n\nThe previous reply could not be built (${message}). Reply with the JSON object only.`;
+      if (svgSlice) {
+        text = await brainWithTools({
+          model,
+          system: `${ping} You may call write_svg again if needed.`,
+          user: run.initial_prompt,
+          userParts: [
+            ...userParts,
+            { text: `The previous reply could not be built (${message}). Reply with the JSON object only.` },
+          ],
+          tools: TASK_OPTIONAL_TOOLS,
+          maxRounds: 16,
+          onStatus: onBrainStatus,
+          onTool: onBrainTool,
+        });
+      } else {
+        text = await brainCompletion({
+          model,
+          messages: [
+            { role: "system", content: ping },
+            {
+              role: "user",
+              content: `The previous reply could not be built (${message}). Reply with the JSON object only.`,
+            },
+          ],
+          userParts: [
+            ...userParts,
+            { text: `The previous reply could not be built (${message}). Reply with the JSON object only.` },
+          ],
+          json: true,
+          onStatus: onBrainStatus,
+        });
+      }
+      piece = parseSlice(text);
+    }
+    merged.push(...piece.deliverables);
   }
 
-  let stagedSvg = collectStagedSvg(toolCtx, filesByName);
-  let stagedHtml = collectStagedHtml(toolCtx, filesByName);
-
-  let composition;
-  try {
-    composition = parseComposition(text, { stagedSvg, stagedHtml });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    text = await brainWithTools({
-      model,
-      system: `${system}\n\nThe previous reply could not be built (${message}). Reply with the JSON object only. You may call write_svg or write_html again if needed.`,
-      user: run.initial_prompt,
-      userParts: [
-        ...userParts,
-        { text: `The previous reply could not be built (${message}). Reply with the JSON object only.` },
-      ],
-      tools: TASK_OPTIONAL_TOOLS,
-      maxRounds: 16,
-      onStatus: onBrainStatus,
-      onTool: onBrainTool,
-    });
-    stagedSvg = collectStagedSvg(toolCtx, filesByName);
-    stagedHtml = collectStagedHtml(toolCtx, filesByName);
-    composition = parseComposition(text, { stagedSvg, stagedHtml });
-  }
-  const compositionPath = path.join(dir, "argon_composition.json");
+  const composition: Composition = { deliverables: merged };
+  const compositionPath = taskCompositionWritePath(dir);
   fs.writeFileSync(compositionPath, JSON.stringify(composition, null, 2));
   await persistRunFile(compositionPath);
 

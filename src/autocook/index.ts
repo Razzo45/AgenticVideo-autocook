@@ -3,7 +3,7 @@
  *
  *   import { planCook, generateSegment, assemble, runAutocook } from "./autocook";
  *
- * Flow: Argon brain plan → per-kind generation → deterministic assemble/export.
+ * Flow: brain plan → per-kind generation → deterministic assemble/export.
  */
 export { planCook } from "./planCook";
 export { generateSegment } from "./generateSegment";
@@ -18,11 +18,11 @@ export { generateImages } from "./generateImage";
 export { generatePptx } from "./generatePptx";
 export { exportPdf } from "./exportPdf";
 export {
-  ARGON_MEDIA_TOOL_DECLARATIONS,
-  executeArgonMediaTool,
+  MEDIA_TOOL_DECLARATIONS,
+  executeMediaTool,
   materializePlanAssets,
   rewriteAssetPlaceholders,
-} from "./argonMediaTools";
+} from "./mediaTools";
 export type {
   AutocookMode,
   PlanCookInput,

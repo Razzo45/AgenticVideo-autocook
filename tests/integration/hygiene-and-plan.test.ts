@@ -92,16 +92,17 @@ describe("execute weight from the saved plan", () => {
         ],
       }),
     );
+    assert.equal(scheduleForJob(runId, "task", "task_execute").weight, 35);
     assert.equal(scheduleForJob(runId, "task", "argon_execute").weight, 35);
-    assert.equal(scheduleForJob(runId, "task", "argon_plan").weight, 1);
-    assert.equal(scheduleForJob("missing", "task", "argon_execute").weight, 10);
+    assert.equal(scheduleForJob(runId, "task", "task_plan").weight, 1);
+    assert.equal(scheduleForJob("missing", "task", "task_execute").weight, 10);
   });
 });
 
-describe("stuck argon_plan release", () => {
+describe("stuck task_plan release", () => {
   it("marks hung plan done when execute is pending and run is queued", async () => {
     const { createRun } = await import("../../src/pipeline/orchestrator");
-    const { enqueueJob, getDb, releaseStuckArgonPlanJobs, updateRun } = await import("../../src/db/index");
+    const { enqueueJob, getDb, releaseStuckTaskPlanJobs, updateRun } = await import("../../src/db/index");
     const run = await createRun({
       prompt: "stuck plan",
       category: "Short Drama / Film & TV",
@@ -111,13 +112,13 @@ describe("stuck argon_plan release", () => {
       userId: "unit-stuck-plan",
     });
     getDb().prepare("UPDATE jobs SET status='error' WHERE run_id=?").run(run.id);
-    const planId = await enqueueJob(run.id, "argon_plan", {});
-    const execId = await enqueueJob(run.id, "argon_execute", {});
+    const planId = await enqueueJob(run.id, "task_plan", {});
+    const execId = await enqueueJob(run.id, "task_execute", {});
     getDb().prepare("UPDATE jobs SET status='running' WHERE id=?").run(planId);
     getDb().prepare("UPDATE jobs SET status='pending' WHERE id=?").run(execId);
     await updateRun(run.id, { status: "queued" });
 
-    const released = await releaseStuckArgonPlanJobs();
+    const released = await releaseStuckTaskPlanJobs();
     assert.ok(released >= 1);
     const plan = getDb().prepare("SELECT status FROM jobs WHERE id=?").get(planId) as { status: string };
     assert.equal(plan.status, "done");

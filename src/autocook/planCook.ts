@@ -1,6 +1,6 @@
 /**
- * Argon brain planning — video/audio/html/image/pptx/pdf.
- * Argon owns structure; platform only snaps/writes/exports what the plan marks.
+ * Brain planning — video/audio/html/image/pptx/pdf.
+ * The brain owns structure; platform only snaps/writes/exports what the plan marks.
  * HTML/PPTX planning can call media tools (image/video/SVG) like gemini.google.com.
  */
 import fs from "node:fs";
@@ -20,10 +20,10 @@ import {
 } from "../pipeline/schemaDocs";
 import { inferCookKind } from "./inferCookKind";
 import {
-  ARGON_MEDIA_TOOL_DECLARATIONS,
-  executeArgonMediaTool,
+  MEDIA_TOOL_DECLARATIONS,
+  executeMediaTool,
   type MediaToolContext,
-} from "./argonMediaTools";
+} from "./mediaTools";
 import type { PlanCookInput, PlanCookResult } from "./types";
 
 function parseJsonObject(text: string): unknown {
@@ -124,8 +124,8 @@ Rules:
 - Keep content_safety: no malware, no phishing chrome.`;
 
   const stagingDir = input.workDir
-    ? path.join(input.workDir, "argon_media")
-    : path.join(process.cwd(), ".tmp_argon_media");
+    ? path.join(input.workDir, "compose_media")
+    : path.join(process.cwd(), ".tmp_compose_media");
   fs.mkdirSync(stagingDir, { recursive: true });
   const ctx: MediaToolContext = {
     stagingDir,
@@ -138,10 +138,10 @@ Rules:
     model: BRAIN_MODEL,
     system,
     user: briefUser(input),
-    tools: ARGON_MEDIA_TOOL_DECLARATIONS,
+    tools: MEDIA_TOOL_DECLARATIONS,
     maxRounds: 12,
     onStatus: input.onStatus,
-    onTool: (name, args) => executeArgonMediaTool(name, args, ctx),
+    onTool: (name, args) => executeMediaTool(name, args, ctx),
   });
 
   // Persist tool-staged registry for generateHtml
@@ -164,7 +164,7 @@ Rules:
   );
 
   const parsed = htmlPlanSchema.parse(parseJsonObject(raw));
-  // Merge tool-staged assets into plan if Argon omitted them
+  // Merge tool-staged assets into plan if the brain omitted them
   const byId = new Map(parsed.assets.map((a) => [a.id, a]));
   for (const s of ctx.staged.values()) {
     // html/wav are not HtmlMediaAsset formats — write_html is deliverable staging, not an asset.
@@ -223,8 +223,8 @@ Rules:
 - Widescreen 16:9 unless the brief demands otherwise.`;
 
   const stagingDir = input.workDir
-    ? path.join(input.workDir, "argon_media")
-    : path.join(process.cwd(), ".tmp_argon_media");
+    ? path.join(input.workDir, "compose_media")
+    : path.join(process.cwd(), ".tmp_compose_media");
   fs.mkdirSync(stagingDir, { recursive: true });
   const ctx: MediaToolContext = {
     stagingDir,
@@ -234,7 +234,7 @@ Rules:
   };
 
   // PPTX tools: image + svg only (video not embedded in minimal OOXML yet)
-  const pptxTools = ARGON_MEDIA_TOOL_DECLARATIONS.filter((t) => t.name !== "generate_video");
+  const pptxTools = MEDIA_TOOL_DECLARATIONS.filter((t) => t.name !== "generate_video");
 
   const raw = await brainWithTools({
     model: BRAIN_MODEL,
@@ -243,7 +243,7 @@ Rules:
     tools: pptxTools,
     maxRounds: 10,
     onStatus: input.onStatus,
-    onTool: (name, args) => executeArgonMediaTool(name, args, ctx),
+    onTool: (name, args) => executeMediaTool(name, args, ctx),
   });
   const parsed = pptxPlanSchema.parse(parseJsonObject(raw));
   parsed.slides = parsed.slides.map((s, i) => ({ ...s, index: i }));
@@ -277,7 +277,7 @@ Rules:
 }
 
 async function planPdf(input: PlanCookInput): Promise<PdfPlan> {
-  // Route through html/pptx planners so Argon still gets media tools for the source.
+  // Route through html/pptx planners so the brain still gets media tools for the source.
   const probeSystem = `You are the autocook PDF brain (${BRAIN_MODEL}). Choose the source format only.
 Return ONE JSON object: {"kind":"pdf","media_desc":string,"source":"html"|"pptx","notes":string|null}
 Prefer html for documents/reports; pptx for slide decks.`;

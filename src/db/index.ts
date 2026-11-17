@@ -7,6 +7,7 @@ import {
   LANE_DEFAULT,
 } from "../pipeline/jobLanes";
 import { scheduleForJob } from "../pipeline/taskWeight";
+import { TASK_EXECUTE_JOB_SQL, TASK_PLAN_JOB_SQL } from "../pipeline/taskJobs";
 import { clipStatusLine, type QueueSnapshot, type QueueTask } from "../pipeline/queueStatus";
 import type { AssetRow, JobRow, ReviewRow, RunRow, VariantRow } from "./types";
 import * as pg from "./pgBackend";
@@ -365,14 +366,19 @@ export async function setRunInputAssets(id: string, inputAssetsJson: string): Pr
     .run(inputAssetsJson, nowIso(), id);
 }
 
-export async function updateRun(id: string, patch: Partial<RunRow>): Promise<void> {
-  if (usePg()) return pg.pgUpdateRun(id, patch);
+export async function updateRun(
+  id: string,
+  patch: Partial<RunRow>,
+  opts?: { resume?: boolean },
+): Promise<void> {
+  if (usePg()) return pg.pgUpdateRun(id, patch, opts);
   const current = await getRun(id);
   if (!current) throw new Error(`Unknown run ${id}`);
   // Terminal FSM: failed/exported/rejected cannot be resurrected into active cook states.
+  // retryRun passes resume so a failed cook can go back to queued/generating on purpose.
   let safePatch: Partial<RunRow> = patch;
   const terminal = current.status === "failed" || current.status === "exported" || current.status === "rejected";
-  if (terminal) {
+  if (terminal && !opts?.resume) {
     safePatch = { ...patch };
     if (
       patch.status === "generating" ||
@@ -566,10 +572,10 @@ export async function runHasBusyJobs(runId: string): Promise<boolean> {
 
 /**
  * Two queues:
- * - argon_plan is text. It can run while a deliverable task is generating.
+ * - task_plan is text. It can run while a deliverable task is generating.
  * - Every other job is the deliverable queue. One of those runs at a time.
  *   A run that already finished a generation stage goes first.
- *   Among new deliverable tasks, lower task_weight (from Argon's plan) goes first.
+ *   Among new deliverable tasks, lower task_weight (from the plan) goes first.
  */
 export async function claimNextJob(): Promise<JobRow | undefined> {
   if (usePg()) return pg.pgClaimNextJob();
@@ -584,22 +590,22 @@ export async function claimNextJob(): Promise<JobRow | undefined> {
              SELECT 1 FROM jobs r WHERE r.run_id = j.run_id AND r.status = 'running'
            )
            AND (
-             j.type = 'argon_plan'
+             j.type IN (${TASK_PLAN_JOB_SQL})
              OR NOT EXISTS (
                SELECT 1 FROM jobs busy
-               WHERE busy.status = 'running' AND busy.type <> 'argon_plan'
+               WHERE busy.status = 'running' AND busy.type NOT IN (${TASK_PLAN_JOB_SQL})
              )
            )
          ORDER BY
            CASE
-             WHEN j.type <> 'argon_plan' AND EXISTS (
+             WHEN j.type NOT IN (${TASK_PLAN_JOB_SQL}) AND EXISTS (
                SELECT 1 FROM jobs prev
-               WHERE prev.run_id = j.run_id AND prev.status = 'done' AND prev.type <> 'argon_plan'
+               WHERE prev.run_id = j.run_id AND prev.status = 'done' AND prev.type NOT IN (${TASK_PLAN_JOB_SQL})
              ) THEN 0
-             WHEN j.type <> 'argon_plan' THEN 1
+             WHEN j.type NOT IN (${TASK_PLAN_JOB_SQL}) THEN 1
              ELSE 2
            END,
-           CASE WHEN j.type = 'argon_plan' THEN 0 ELSE COALESCE(j.task_weight, 10) END ASC,
+           CASE WHEN j.type IN (${TASK_PLAN_JOB_SQL}) THEN 0 ELSE COALESCE(j.task_weight, 10) END ASC,
            j.created_at ASC
          LIMIT 1`,
       )
@@ -720,20 +726,20 @@ export async function errorBusyJobsForRun(runId: string, error: string): Promise
  * Plan already enqueued execute and set the run to queued, but the plan job is
  * still "running" (e.g. hung post-job S3 persist). Release it so execute can claim.
  */
-export async function releaseStuckArgonPlanJobs(): Promise<number> {
-  if (usePg()) return pg.pgReleaseStuckArgonPlanJobs();
+export async function releaseStuckTaskPlanJobs(): Promise<number> {
+  if (usePg()) return pg.pgReleaseStuckTaskPlanJobs();
   const database = getDb();
   const rows = database
     .prepare(
       `SELECT plan.id AS id FROM jobs plan
        INNER JOIN runs r ON r.id = plan.run_id
-       WHERE plan.type = 'argon_plan'
+       WHERE plan.type IN (${TASK_PLAN_JOB_SQL})
          AND plan.status = 'running'
          AND r.status = 'queued'
          AND EXISTS (
            SELECT 1 FROM jobs ex
            WHERE ex.run_id = plan.run_id
-             AND ex.type IN ('argon_execute', 'argon_task')
+             AND ex.type IN (${TASK_EXECUTE_JOB_SQL})
              AND ex.status = 'pending'
          )`,
     )

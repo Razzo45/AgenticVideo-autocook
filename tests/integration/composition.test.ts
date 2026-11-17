@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { describe, it } from "node:test";
 import JSZip from "jszip";
-import { executeArgonMediaTool } from "../../src/autocook/argonMediaTools";
+import { executeMediaTool } from "../../src/autocook/mediaTools";
 import { buildComposition, parseComposition } from "../../src/pipeline/composition";
 import { probeFile } from "../../src/pipeline/stitch";
 
@@ -43,7 +43,7 @@ describe("composition build", () => {
 
     const toolDir = path.join(root, "tool");
     fs.mkdirSync(toolDir, { recursive: true });
-    await executeArgonMediaTool(
+    await executeMediaTool(
       "fit_image",
       { id: "zip-path", source: "brand/logo.png", filename: "slots/zip-path.png", width: 16, height: 16 },
       { stagingDir: toolDir, staged: new Map(), filesByName: new Map([["brand/logo.png", logo]]), namedReferencesOnly: true },

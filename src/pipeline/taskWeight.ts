@@ -1,5 +1,5 @@
 /**
- * Queue cost of one operator task, taken from Argon's deliverable plan.
+ * Queue cost of one operator task, taken from the brain's deliverable plan.
  * The plan is a text step. Generation waits in line by the sum of that plan.
  *
  * image 10 · svg 5 · html 10 · pdf 15 · pptx 20 · audio 20 · video 30
@@ -7,8 +7,8 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
 import { runDir } from "./paths";
+import { isTaskExecuteJob, isTaskPlanJob, taskPlanPath } from "./taskJobs";
 
 export const DELIVERABLE_UNITS = {
   image: 10,
@@ -100,12 +100,12 @@ export function weightFromDeliverables(items: PlannedDeliverable[]): TaskSchedul
   return { weight, parts };
 }
 
-/** Legacy single-mode cooks are one file. Task generation uses the saved Argon plan. */
+/** Legacy single-mode cooks are one file. Task generation uses the saved plan. */
 export function scheduleForRun(
   pipelineMode: string | null | undefined,
   jobType: string,
 ): TaskSchedule {
-  if (jobType === "argon_plan") {
+  if (isTaskPlanJob(jobType)) {
     return { weight: 1, parts: [{ deliverable: "unspecified", count: 1, unit: 1 }] };
   }
   const single: Record<string, DeliverableUnit> = {
@@ -123,15 +123,15 @@ export function scheduleForRun(
   return { weight: DELIVERABLE_UNITS[id], parts: [{ deliverable: id, count: 1, unit: DELIVERABLE_UNITS[id] }] };
 }
 
-/** Deliverable jobs use the plan Argon already wrote. The plan job itself is text. */
+/** Deliverable jobs use the plan the brain already wrote. The plan job itself is text. */
 export function scheduleForJob(
   runId: string,
   pipelineMode: string | null | undefined,
   jobType: string,
 ): TaskSchedule {
-  if (jobType === "argon_execute" || jobType === "argon_task") {
+  if (isTaskExecuteJob(jobType)) {
     try {
-      const raw = fs.readFileSync(path.join(runDir(runId), "argon_plan.json"), "utf8");
+      const raw = fs.readFileSync(taskPlanPath(runDir(runId)), "utf8");
       const parsed = JSON.parse(raw) as { deliverables?: PlannedDeliverable[] };
       return weightFromDeliverables(parsed.deliverables ?? []);
     } catch {

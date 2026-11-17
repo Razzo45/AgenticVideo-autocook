@@ -1,6 +1,6 @@
 /**
- * HTML cook — Argon owns file contents; platform writes verbatim.
- * Materializes Argon media tools (image/video/SVG), rewrites {{asset:id}},
+ * HTML cook — the brain owns file contents; platform writes verbatim.
+ * Materializes brain media tools (image/video/SVG), rewrites {{asset:id}},
  * optional Chromium screenshot, zip when multi-file.
  */
 import fs from "node:fs";
@@ -14,7 +14,7 @@ import {
   rewriteAssetPlaceholders,
   type MediaToolContext,
   type StagedMedia,
-} from "./argonMediaTools";
+} from "./mediaTools";
 
 const execFileAsync = promisify(execFile);
 
@@ -84,7 +84,7 @@ async function zipBundle(bundleDir: string, written: string[], outZip: string): 
 
 function loadStagedRegistry(outDir: string): Map<string, StagedMedia> {
   const map = new Map<string, StagedMedia>();
-  const stagingDir = path.join(outDir, "argon_media");
+  const stagingDir = path.join(outDir, "compose_media");
   const registryPath = path.join(stagingDir, "staged.json");
   if (!fs.existsSync(registryPath)) return map;
   try {
@@ -126,14 +126,14 @@ export async function generateHtml(opts: {
   const written: string[] = [];
 
   const ctx: MediaToolContext = {
-    stagingDir: path.join(opts.outDir, "argon_media"),
+    stagingDir: path.join(opts.outDir, "compose_media"),
     staged: loadStagedRegistry(opts.outDir),
     referenceImagePaths: opts.referenceImagePaths,
     onStatus: opts.onStatus,
   };
 
   if (opts.plan.assets?.length) {
-    opts.onStatus?.(`Materializing ${opts.plan.assets.length} Argon media asset(s)…`);
+    opts.onStatus?.(`Materializing ${opts.plan.assets.length} media asset(s)…`);
     await materializePlanAssets(opts.plan.assets, ctx);
   }
 

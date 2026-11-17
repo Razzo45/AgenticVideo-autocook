@@ -572,7 +572,7 @@ export async function generateVideo(opts: {
   /** When true, empty/filter retries use educational soften (not combat soften). */
   educationalSoften?: boolean;
   /**
-   * Argon (or another brain) owns the full generation instruction.
+   * The brain owns the full generation instruction.
    * Omni must not wrap/rephrase — only API transport + duration/aspect from the plan.
    */
   brainOwnedPrompt?: boolean;
@@ -612,7 +612,7 @@ export async function generateVideo(opts: {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         if (!/input blocked|request blocked|safety violation/i.test(message)) throw err;
-        // Never rewrite Argon-owned prompts — silent rewriteScene handles filter recovery upstream.
+        // Never rewrite brain-owned prompts — silent rewriteScene handles filter recovery upstream.
         if (
           !opts.brainOwnedPrompt &&
           /sensitive words|rephras|safety violation/i.test(message) &&

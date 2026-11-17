@@ -32,7 +32,7 @@ function canonicalFinalName(masterPath: string, kind: DocPipelineMode): string {
   return "final.pdf";
 }
 
-/** Worker job: Argon plan → generate → assemble/export under runs/<id>/. */
+/** Worker job: brain plan → generate → assemble/export under runs/<id>/. */
 export async function jobDocCook(run: RunRow): Promise<void> {
   const kind = docKind(run);
   const dir = runDir(run.id);
@@ -41,7 +41,7 @@ export async function jobDocCook(run: RunRow): Promise<void> {
   await updateRun(run.id, {
     status: "generating",
     gate: null,
-    error: `Queued document cook (${kind}) — Argon planning…`,
+    error: `Queued document cook (${kind}) — planning…`,
   });
 
   const inputs = await hydrateRunInputs(run.input_assets_json);

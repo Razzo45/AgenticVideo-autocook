@@ -7,9 +7,11 @@ GDP-style: two services, shared Postgres + object storage, Gemini Files URI reus
 | Service | Dockerfile | Role |
 |---------|------------|------|
 | **web** | `Dockerfile.web` | Next.js UI + `/api/cook` enqueue |
-| **worker** | `Dockerfile.worker` | Job claim + Omni/image/Argon + hygiene |
+| **worker** | `Dockerfile.worker` | Job claim + Omni/image/brain + hygiene |
 
 Keep the legacy `Dockerfile` + `deploy/start.sh` only for single-box smoke tests.
+
+Web and worker must ship this revision together. New cooks enqueue `task_plan` / `task_execute`; the worker still claims leftover `argon_plan` / `argon_execute` rows and still reads `argon_plan.json` from the bucket. If web deploys first, new jobs sit until the worker catches up. A worker restart fails in-flight running jobs (same as today) — retry those cooks.
 
 ## Env (both services)
 

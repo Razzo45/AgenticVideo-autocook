@@ -1,5 +1,5 @@
 /**
- * Image cook — PNG via Gemini image API; SVG written verbatim from Argon.
+ * Image cook — PNG via Gemini image API; SVG written verbatim from the brain.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -90,7 +90,7 @@ export async function generateImages(opts: {
       fs.writeFileSync(outPath, svg, "utf8");
     } else {
       const prompt = asset.prompt?.trim();
-      if (!prompt) throw new Error(`PNG asset ${asset.id} missing prompt from Argon`);
+      if (!prompt) throw new Error(`PNG asset ${asset.id} missing prompt from the brain`);
       await generatePng({
         prompt: `${prompt}\n\nOutput size about ${asset.width}x${asset.height}.`,
         outPath,

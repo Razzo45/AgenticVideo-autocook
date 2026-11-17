@@ -3,7 +3,7 @@
  *
  * Storage model (s3 mode): bucket is canonical; local RUNS_DIR is scratch only.
  *
- * - When a cook finishes: drop staging (shots/inputs/plates/argon_media) from local + bucket.
+ * - When a cook finishes: drop staging (shots/inputs/plates/compose_media) from local + bucket.
  *   Keep final.*, the task out/ folder, deliverables.json, and small plan/result JSON for download.
  * - Last interaction older than RUN_TTL_MS (24h): delete the entire run (bucket + local).
  * - Worker also clears local cache after each job once artifacts are committed to S3.
@@ -14,12 +14,13 @@ import {
   getDb,
   getRun,
   listRuns,
-  releaseStuckArgonPlanJobs,
+  releaseStuckTaskPlanJobs,
   runHasBusyJobs,
   updateRun,
   type RunRow,
 } from "../db";
 import { RUNS_DIR, runDir } from "./paths";
+import { isKeptTaskMetaFile } from "./taskJobs";
 import { deleteRunPrefix, storageMode } from "./storage";
 import { reapGeminiFiles } from "./geminiStaging";
 
@@ -35,6 +36,7 @@ const STAGING_NAMES = new Set([
   "site",
   "assets",
   "pptx_media",
+  "compose_media",
   "argon_media",
   "audio",
   "omni_upload",
@@ -55,9 +57,7 @@ function shouldKeepName(name: string): boolean {
     /^final(\.|$)/i.test(name) ||
     name === "out" ||
     name === "deliverables.json" ||
-    name === "argon_plan.json" ||
-    name === "argon_composition.json" ||
-    name === "argon_notes.txt" ||
+    isKeptTaskMetaFile(name) ||
     name === "cook_result.json" ||
     name === "stitch_report.json" ||
     name === "html_plan.json" ||
@@ -182,12 +182,12 @@ export async function runHygieneSweep(): Promise<{
   const now = Date.now();
   let stuckPlansReleased = 0;
   try {
-    stuckPlansReleased = await releaseStuckArgonPlanJobs();
+    stuckPlansReleased = await releaseStuckTaskPlanJobs();
     if (stuckPlansReleased > 0) {
-      console.warn(`[hygiene] released ${stuckPlansReleased} stuck argon_plan job(s)`);
+      console.warn(`[hygiene] released ${stuckPlansReleased} stuck task_plan job(s)`);
     }
   } catch (err) {
-    console.warn("[hygiene] releaseStuckArgonPlanJobs failed", err);
+    console.warn("[hygiene] releaseStuckTaskPlanJobs failed", err);
   }
   const orphansFailed = await failOrphanGeneratingRuns(now);
 

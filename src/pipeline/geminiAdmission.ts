@@ -1,13 +1,13 @@
 /**
  * Process-wide Gemini admission for autocook — GDP AdaptiveAdmission tuned for
- * heavy media (Omni video / image / Argon tools), not text-only grading.
+ * heavy media (Omni video / image / brain tools), not text-only grading.
  *
  * Job-queue lanes decide *which cook runs*. This gate decides *how many Gemini
  * calls may be in flight* so 2 parallel cooks cannot 429-storm the shared key.
  *
  * Defaults (vs GDP text grading ceilings of 16–96):
  *   floor 1 · ceiling 2 · initial 1 · ownerCeiling 1 · filesCeiling 2
- * Lanes: argon (text), image, omni (video), files
+ * Lanes: brain (text), image, omni (video), files
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
@@ -18,8 +18,9 @@ import {
   PACE_AFTER_429_MS,
 } from "./geminiAdmissionCore";
 import { throttleSharedAdmission, withSharedAdmission } from "./sharedAdmission";
+import { isCancelledError, isPlatformFaultError } from "./runControl";
 
-export type GeminiLane = "argon" | "image" | "omni" | "files";
+export type GeminiLane = "brain" | "image" | "omni" | "files";
 
 export type { AdmissionSnapshot, RequestClass };
 
@@ -79,6 +80,8 @@ export function isRateLimitError(err: unknown): boolean {
 }
 
 export function isTransientServerError(err: unknown): boolean {
+  // Our own deadlines/cancels are not Gemini 5xx — retrying them loops 13m forever.
+  if (isCancelledError(err) || isPlatformFaultError(err)) return false;
   const msg = err instanceof Error ? err.message : String(err);
   const status =
     err && typeof err === "object" && "status" in err

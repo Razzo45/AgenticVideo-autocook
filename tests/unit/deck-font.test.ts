@@ -66,7 +66,7 @@ function guidBytes(guid: string): Buffer {
 }
 
 describe("deck typefaces", () => {
-  it("embeds the attached family Argon names and does not invent one", async () => {
+  it("embeds the attached family the brain names and does not invent one", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "autocook-font-"));
     const regular = craftFont("Poppins", "Regular");
     const bold = craftFont("Poppins", "Bold");

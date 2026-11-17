@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, it } from "node:test";
-import { executeArgonMediaTool, type MediaToolContext } from "../../src/autocook/argonMediaTools";
+import { executeMediaTool, type MediaToolContext } from "../../src/autocook/mediaTools";
 import { probeFile } from "../../src/pipeline/stitch";
 
 const execFileAsync = promisify(execFile);
@@ -65,7 +65,7 @@ describe("fit_video audio intent", () => {
       namedReferencesOnly: true,
     };
 
-    const muted = await executeArgonMediaTool(
+    const muted = await executeMediaTool(
       "fit_video",
       {
         id: "muted",
@@ -79,7 +79,7 @@ describe("fit_video audio intent", () => {
     assert.equal(muted.audio, "mute");
     assert.equal(muted.has_audio, false);
 
-    const kept = await executeArgonMediaTool(
+    const kept = await executeMediaTool(
       "fit_video",
       {
         id: "kept",

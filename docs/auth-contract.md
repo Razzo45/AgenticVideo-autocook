@@ -2,7 +2,7 @@
 
 Autocook does **not** ship email/password login. Identity comes from the mother platform (or local mint for testing).
 
-A cook is one task. The sign-in token identifies the person. It does not name a deliverable. The cook body is the operator prompt and the files. Argon decides the files.
+A cook is one task. The sign-in token identifies the person. It does not name a deliverable. The cook body is the operator prompt and the files. The brain decides the files.
 
 ## Modes
 
@@ -58,7 +58,7 @@ Service callers send `Authorization: Bearer <AUTOCOOK_SERVICE_TOKEN>` and `X-Use
 
 A cook has two stages.
 
-1. **Plan.** Argon reads the prompt and the files and returns the list of files it will make. This is text. It can run while someone else's files are generating.
+1. **Plan.** The brain reads the prompt and the files and returns the list of files it will make. This is text. It can run while someone else's files are generating.
 2. **Deliverables.** That list sets `taskWeight`. The worker makes one task's files at a time. Lower weight goes first. A task already in a later generation stage finishes before the next person starts.
 
 | Deliverable | Weight |
@@ -69,7 +69,7 @@ A cook has two stages.
 | pptx, audio | 20 |
 | video | 30 |
 
-Argon lists three images: weight 30. Argon lists one video and two images: weight 50, so that task waits behind the image task. The prompt text is not scored. The plan is.
+The brain lists three images: weight 30. The brain lists one video and two images: weight 50, so that task waits behind the image task. The prompt text is not scored. The plan is.
 
 The cook response has `stage: "plan"` and `taskWeight: null` until that plan exists. The run ticker then shows the weight.
 

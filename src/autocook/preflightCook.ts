@@ -1,5 +1,5 @@
 /**
- * Argon refusal preflight — soft risks auto-rewrite; hard blockers stop COOK.
+ * Brain refusal preflight — soft risks auto-rewrite; hard blockers stop COOK.
  */
 import { brainCompletion } from "../pipeline/geminiBrain";
 import { BRAIN_MODEL } from "../pipeline/constants";

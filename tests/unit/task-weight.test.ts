@@ -34,10 +34,11 @@ describe("task weight", () => {
   });
 
   it("gives the plan step a token weight and legacy modes their single file", () => {
+    assert.equal(scheduleForRun("task", "task_plan").weight, 1);
     assert.equal(scheduleForRun("task", "argon_plan").weight, 1);
     assert.equal(scheduleForRun("pptx", "doc_cook").weight, 20);
     assert.equal(scheduleForRun("auto", "script").weight, 30);
     assert.equal(scheduleForRun("audio", "audio_plan").weight, 20);
-    assert.equal(scheduleForRun("task", "argon_execute").weight, 10);
+    assert.equal(scheduleForRun("task", "task_execute").weight, 10);
   });
 });
