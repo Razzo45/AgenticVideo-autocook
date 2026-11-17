@@ -167,7 +167,8 @@ Rules:
   // Merge tool-staged assets into plan if Argon omitted them
   const byId = new Map(parsed.assets.map((a) => [a.id, a]));
   for (const s of ctx.staged.values()) {
-    if (s.format === "wav") continue;
+    // html/wav are not HtmlMediaAsset formats — write_html is deliverable staging, not an asset.
+    if (s.format === "wav" || s.format === "html") continue;
     if (!byId.has(s.id)) {
       parsed.assets.push({
         id: s.id,
