@@ -177,6 +177,7 @@ In that HTML, list "assets" and write {{asset:id}} where one should appear.
 HTML prints in the browser. "from" a pptx prints only where LibreOffice is installed.
 
 kind "html" — "entry" and "files":[{"path":"index.html","content":"the file"}] plus "assets" as above. {{asset:id}} in the file contents. File contents are written as you wrote them, apart from those tokens.
+Optional tool write_html: when the page is large, call write_html once with the full document, then in this JSON use the same id and filename and omit files content (or leave files empty / omit files). Small pages may still be inlined here.
 
 kind "svg" — "svg" is the full document.
 Optional tool write_svg: when a mark is large (outlined logos, many paths), call write_svg once per file with the full markup, then in this JSON use the same id and filename and omit "svg" (or leave it empty). Small SVGs may still be inlined here. Tools are optional — ordinary tasks can reply with JSON only and never call them. When several large SVGs are planned, prefer one write_svg per turn (not all marks in one reply), then thin JSON.
@@ -224,9 +225,40 @@ export function hydrateSvgFromStaged(
   };
 }
 
+export type StagedHtmlFile = { content: string; path: string };
+
+/**
+ * Fill empty kind:"html" files from write_html (same id or filename).
+ * Platform stores the markup unchanged.
+ */
+export function hydrateHtmlFromStaged(
+  composition: Composition,
+  stagedHtml: Map<string, StagedHtmlFile>,
+): Composition {
+  if (!stagedHtml.size) return composition;
+  return {
+    ...composition,
+    deliverables: composition.deliverables.map((item) => {
+      if (item.kind !== "html") return item;
+      const hasContent = (item.files ?? []).some((file) => file.content.trim());
+      if (hasContent) return item;
+      const byId = stagedHtml.get(item.id);
+      const byFile = stagedHtml.get(item.filename) ?? stagedHtml.get(item.filename.toLowerCase());
+      const staged = byId ?? byFile;
+      if (!staged?.content.trim()) return item;
+      const entry = item.entry?.trim() || staged.path || "index.html";
+      return {
+        ...item,
+        entry,
+        files: [{ path: entry, content: staged.content }],
+      };
+    }),
+  };
+}
+
 export function parseComposition(
   text: string,
-  opts?: { stagedSvg?: Map<string, string> },
+  opts?: { stagedSvg?: Map<string, string>; stagedHtml?: Map<string, StagedHtmlFile> },
 ): Composition {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const rawText = fenced ? fenced[1]! : text;
@@ -248,7 +280,9 @@ export function parseComposition(
       .join("; ");
     throw new Error(`Deliverable JSON did not match the file shape: ${issue}`);
   }
-  const data = opts?.stagedSvg?.size ? hydrateSvgFromStaged(parsed.data, opts.stagedSvg) : parsed.data;
+  let data = parsed.data;
+  if (opts?.stagedSvg?.size) data = hydrateSvgFromStaged(data, opts.stagedSvg);
+  if (opts?.stagedHtml?.size) data = hydrateHtmlFromStaged(data, opts.stagedHtml);
   assertBuildable(data);
   return data;
 }
@@ -417,6 +451,7 @@ function normalizeDeliverable(raw: unknown, index: number): Record<string, unkno
     duration_sec: num(row.duration_sec),
     fit: fitOf(row.fit),
     pad_color: str(row.pad_color),
+    audio: row.audio === "mute" || row.audio === "keep" ? row.audio : undefined,
     places: strings(row.places),
   };
   if (Array.isArray(row.slides)) {

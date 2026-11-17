@@ -16,6 +16,7 @@ describe("composition parse", () => {
     assert.match(text, /Deck\.pptx/);
     assert.match(text, /write_svg/);
     assert.match(text, /one write_svg per turn/);
+    assert.match(text, /write_html/);
     assert.match(text, /"audio":"keep"/);
     assert.match(text, /"audio":"mute"/);
   });
@@ -57,6 +58,18 @@ describe("composition parse", () => {
       { stagedSvg: staged },
     );
     assert.match(composition.deliverables[0]?.svg ?? "", /<svg/);
+  });
+
+  it("fills empty html files from staged write_html documents", () => {
+    const staged = new Map([
+      ["page", { content: "<!doctype html><html><body>Hi</body></html>", path: "index.html" }],
+    ]);
+    const composition = parseComposition(
+      JSON.stringify({ deliverables: [{ kind: "html", id: "page", filename: "Site.html" }] }),
+      { stagedHtml: staged },
+    );
+    assert.equal(composition.deliverables[0]?.entry, "index.html");
+    assert.equal(composition.deliverables[0]?.files?.[0]?.content.includes("Hi"), true);
   });
 
   it("reads a fenced reply and aliases", () => {

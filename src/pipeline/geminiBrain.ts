@@ -193,20 +193,34 @@ export async function brainWithTools(opts: {
 
   for (let round = 0; round < maxRounds; round++) {
     opts.onStatus?.(`${label} tool round ${round + 1}/${maxRounds}…`);
-    const result = await generateContentBounded(
-      `${label} tool round ${round + 1}/${maxRounds}`,
-      () =>
-        ai.models.generateContent({
-          model,
-          contents,
-          config: {
-            systemInstruction: opts.system,
-            tools: [{ functionDeclarations: opts.tools }],
-            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
-          },
-        }),
-      opts.onStatus,
-    );
+    const roundLabel = `${label} tool round ${round + 1}/${maxRounds}`;
+    const callRound = () =>
+      generateContentBounded(
+        roundLabel,
+        () =>
+          ai.models.generateContent({
+            model,
+            contents,
+            config: {
+              systemInstruction: opts.system,
+              tools: [{ functionDeclarations: opts.tools }],
+              thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            },
+          }),
+        opts.onStatus,
+      );
+    let result;
+    try {
+      result = await callRound();
+    } catch (err) {
+      // One retry on a hung/timed-out brain round — same as the composition mistake pingback.
+      if (isCancelledError(err)) throw err;
+      const timedOut =
+        isPlatformFaultError(err) && /timed out/i.test(err instanceof Error ? err.message : String(err));
+      if (!timedOut) throw err;
+      opts.onStatus?.(`${roundLabel} timed out — one retry…`);
+      result = await callRound();
+    }
 
     const calls = result.functionCalls ?? [];
     const modelParts: Part[] = [];
@@ -232,7 +246,7 @@ export async function brainWithTools(opts: {
         role: "user",
         parts: [
           {
-            text: "Your previous reply was empty. Call write_svg if a mark is large, or reply with the JSON object only. Do not return an empty message.",
+            text: "Your previous reply was empty. Call write_svg or write_html if the markup is large, or reply with the JSON object only. Do not return an empty message.",
           },
         ],
       });
