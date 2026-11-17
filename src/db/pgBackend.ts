@@ -128,11 +128,14 @@ export async function pgListRuns(userId?: string): Promise<RunRow[]> {
 export async function pgUpdateRun(id: string, patch: Partial<RunRow>): Promise<void> {
   const current = await pgGetRun(id);
   if (!current) throw new Error(`Unknown run ${id}`);
-  // Ignore late fire-and-forget "generating" ticks after the run already failed/exported.
-  const safePatch =
-    patch.status === "generating" && (current.status === "failed" || current.status === "exported")
-      ? { ...patch, status: current.status }
-      : patch;
+  // Ignore late fire-and-forget ticker writes after the run already failed/exported.
+  let safePatch: Partial<RunRow> = patch;
+  if (current.status === "failed" || current.status === "exported") {
+    safePatch = { ...patch };
+    if (patch.status === "generating") safePatch.status = current.status;
+    // Tool tickers only pass { error } — do not overwrite the terminal failure/export message.
+    if (patch.error !== undefined && patch.status === undefined) safePatch.error = current.error;
+  }
   const next = { ...current, ...safePatch };
   await pgQuery(
     `UPDATE app.runs SET

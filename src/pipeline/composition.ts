@@ -1536,13 +1536,21 @@ async function concatAudio(files: string[], dest: string): Promise<void> {
   ]);
 }
 
-async function ffmpeg(args: string[]): Promise<void> {
+const COMPOSITION_FFMPEG_TIMEOUT_MS = 10 * 60_000;
+
+async function ffmpeg(args: string[], timeoutMs = COMPOSITION_FFMPEG_TIMEOUT_MS): Promise<void> {
   try {
     await execFileAsync("ffmpeg", ["-hide_banner", "-nostdin", "-y", ...args], {
       maxBuffer: 32 * 1024 * 1024,
       windowsHide: true,
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
     });
   } catch (err) {
+    const execErr = err as { message?: string; killed?: boolean; code?: string | number };
+    if (execErr.killed || execErr.code === "ETIMEDOUT") {
+      throw new Error(`ffmpeg timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`ffmpeg failed: ${message.slice(0, 500)}`);
   }

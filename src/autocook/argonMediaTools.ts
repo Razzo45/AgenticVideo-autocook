@@ -279,6 +279,9 @@ function sharpPadColor(value: string): { r: number; g: number; b: number; alpha:
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255, alpha: 1 };
 }
 
+/** ~100MP cap — refuse decompression bombs without cook-specific size heuristics. */
+const SHARP_MAX_INPUT_PIXELS = 100_000_000;
+
 /** Resize a still with sharp — avoids live ffmpeg hangs on cover fits. */
 async function fitStillWithSharp(
   source: string,
@@ -289,7 +292,11 @@ async function fitStillWithSharp(
   padColorHex: string,
 ): Promise<void> {
   const background = sharpPadColor(padColorHex);
-  let pipeline = sharp(source, { failOn: "none", animated: false }).rotate();
+  let pipeline = sharp(source, {
+    failOn: "none",
+    animated: false,
+    limitInputPixels: SHARP_MAX_INPUT_PIXELS,
+  }).rotate();
   if (fit === "cover") {
     pipeline = pipeline.resize(width, height, { fit: "cover", position: "centre" });
   } else if (fit === "stretch") {
@@ -297,7 +304,30 @@ async function fitStillWithSharp(
   } else {
     pipeline = pipeline.resize(width, height, { fit: "contain", background });
   }
-  await pipeline.png().toFile(outPath);
+  const work = pipeline.png().toFile(outPath);
+  await Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      setTimeout(
+        () => reject(new Error(`fit_image timed out after ${FIT_IMAGE_TIMEOUT_MS / 1000}s`)),
+        FIT_IMAGE_TIMEOUT_MS,
+      );
+    }),
+  ]);
+}
+
+/** Keep the run ticker alive during long encodes without changing status. */
+function withStatusHeartbeat<T>(
+  ctx: MediaToolContext,
+  label: string,
+  work: Promise<T>,
+  intervalMs = 15_000,
+): Promise<T> {
+  if (!ctx.onStatus) return work;
+  const timer = setInterval(() => {
+    ctx.onStatus?.(toolStatus(ctx, `${label} (still working)…`));
+  }, intervalMs);
+  return work.finally(() => clearInterval(timer));
 }
 
 /**
@@ -333,6 +363,11 @@ const FIT_IMAGE_TIMEOUT_MS = 60_000;
 const FIT_VIDEO_TIMEOUT_MS = 3 * 60_000;
 const JOIN_VIDEOS_TIMEOUT_MS = 10 * 60_000;
 const PROBE_TIMEOUT_MS = 30_000;
+
+/** Treat as motion when probe reports meaningful duration — not by file extension. */
+function sourceNeedsFrameExtract(probe: { width: number; height: number; duration: number | null }): boolean {
+  return (probe.duration ?? 0) > 0.2;
+}
 
 async function ffmpeg(args: string[], timeoutMs = FIT_VIDEO_TIMEOUT_MS): Promise<void> {
   try {
@@ -505,27 +540,28 @@ export async function executeArgonMediaTool(
     ctx.onStatus?.(toolStatus(ctx, `fit_image (${id}, ${width}x${height} ${fit})…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
-    // Stills: sharp (ffmpeg was hanging on live for cover fits). Video: one frame via ffmpeg then sharp.
-    const looksStill = /\.(png|jpe?g|webp|gif|bmp|svg|tif{1,2})$/i.test(source);
+    // Classify by probe (not extension): stills → sharp; motion → one frame then sharp.
+    const sourceProbe = await probeSource(source);
+    if (!(sourceProbe.width > 0 && sourceProbe.height > 0)) {
+      throw new Error(`fit_image: source has no video/image frame (${path.basename(source)})`);
+    }
     let stillPath = source;
     let tmpFrame: string | null = null;
     try {
-      if (!looksStill) {
-        const sourceProbe = await probeSource(source);
-        if (!(sourceProbe.width > 0 && sourceProbe.height > 0)) {
-          throw new Error(`fit_image: source has no video/image frame (${path.basename(source)})`);
-        }
-        if ((sourceProbe.duration ?? 0) > 0.2) {
-          tmpFrame = path.join(ctx.stagingDir, `.${process.pid}.${id}.frame.png`);
-          await ffmpegOut(
-            tmpFrame,
-            ["-ss", "0", "-t", "1", "-i", source, "-frames:v", "1", "-an"],
-            FIT_IMAGE_TIMEOUT_MS,
-          );
-          stillPath = tmpFrame;
-        }
+      if (sourceNeedsFrameExtract(sourceProbe)) {
+        tmpFrame = path.join(ctx.stagingDir, `.${process.pid}.${id}.frame.png`);
+        await ffmpegOut(
+          tmpFrame,
+          ["-ss", "0", "-t", "1", "-i", source, "-frames:v", "1", "-an"],
+          FIT_IMAGE_TIMEOUT_MS,
+        );
+        stillPath = tmpFrame;
       }
-      await fitStillWithSharp(stillPath, absPath, width, height, fit, String(args.pad_color ?? "FFFFFF"));
+      await withStatusHeartbeat(
+        ctx,
+        `fit_image (${id})`,
+        fitStillWithSharp(stillPath, absPath, width, height, fit, String(args.pad_color ?? "FFFFFF")),
+      );
     } finally {
       if (tmpFrame) fs.rmSync(tmpFrame, { force: true });
     }
@@ -673,9 +709,17 @@ export async function executeArgonMediaTool(
       "libx264",
       "-pix_fmt",
       "yuv420p",
-      ...(probedIn.hasAudio ? ["-c:a", "aac"] : ["-an"]),
+      ...(probedIn.hasAudio
+        ? loop
+          ? ["-c:a", "aac", "-shortest"]
+          : ["-c:a", "aac"]
+        : ["-an"]),
     ];
-    await ffmpegOut(absPath, argsFfmpeg, FIT_VIDEO_TIMEOUT_MS);
+    await withStatusHeartbeat(
+      ctx,
+      `fit_video (${id})`,
+      ffmpegOut(absPath, argsFfmpeg, FIT_VIDEO_TIMEOUT_MS),
+    );
     const probed = await probeSource(absPath);
     remember(ctx, { id, format: "mp4", filename, absPath, embed: "path", mime: "video/mp4" });
     return {
@@ -702,7 +746,13 @@ export async function executeArgonMediaTool(
     // Normalize fps — concat fails when Omni (often 24) meets plate footage (often 25).
     const fps = first.fps && first.fps > 0 ? Math.round(first.fps * 1000) / 1000 : 24;
     const probes = await Promise.all(sources.map((src) => probeSource(src)));
-    const withAudio = probes.every((probe) => probe.hasAudio);
+    const audioCount = probes.filter((probe) => probe.hasAudio).length;
+    if (audioCount > 0 && audioCount < probes.length) {
+      throw new Error(
+        `join_videos: ${audioCount}/${probes.length} clips have audio — every clip must have audio, or none (mixed audio is not joined silently)`,
+      );
+    }
+    const withAudio = audioCount === probes.length;
     ctx.onStatus?.(toolStatus(ctx, `join_videos (${id}, ${clips.length} clips)…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
@@ -713,23 +763,27 @@ export async function executeArgonMediaTool(
       fps,
       withAudio,
     });
-    await ffmpegOut(
-      absPath,
-      [
-        ...sources.flatMap((src) => ["-i", src]),
-        "-filter_complex",
-        filterComplex,
-        "-map",
-        "[v]",
-        ...(withAudio ? ["-map", "[a]", "-c:a", "aac", "-ar", "48000", "-ac", "2"] : ["-an"]),
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-r",
-        String(fps),
-      ],
-      JOIN_VIDEOS_TIMEOUT_MS,
+    await withStatusHeartbeat(
+      ctx,
+      `join_videos (${id})`,
+      ffmpegOut(
+        absPath,
+        [
+          ...sources.flatMap((src) => ["-i", src]),
+          "-filter_complex",
+          filterComplex,
+          "-map",
+          "[v]",
+          ...(withAudio ? ["-map", "[a]", "-c:a", "aac", "-ar", "48000", "-ac", "2"] : ["-an"]),
+          "-c:v",
+          "libx264",
+          "-pix_fmt",
+          "yuv420p",
+          "-r",
+          String(fps),
+        ],
+        JOIN_VIDEOS_TIMEOUT_MS,
+      ),
     );
     const probed = await probeSource(absPath);
     remember(ctx, { id, format: "mp4", filename, absPath, embed: "path", mime: "video/mp4" });

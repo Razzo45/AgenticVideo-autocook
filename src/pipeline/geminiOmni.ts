@@ -125,7 +125,7 @@ export async function trimVideoForOmni(
       "+faststart",
       dest,
     ],
-    { maxBuffer: 32 * 1024 * 1024, windowsHide: true },
+    { maxBuffer: 32 * 1024 * 1024, windowsHide: true, timeout: 180_000, killSignal: "SIGKILL" },
   );
   if (!fs.existsSync(dest) || fs.statSync(dest).size < 1024) {
     throw new Error(`Failed to trim Omni segment from ${path.basename(src)}`);
