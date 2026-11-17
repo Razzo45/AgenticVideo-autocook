@@ -369,12 +369,20 @@ export async function updateRun(id: string, patch: Partial<RunRow>): Promise<voi
   if (usePg()) return pg.pgUpdateRun(id, patch);
   const current = await getRun(id);
   if (!current) throw new Error(`Unknown run ${id}`);
-  // Ignore late fire-and-forget ticker writes after the run already failed/exported.
+  // Terminal FSM: failed/exported/rejected cannot be resurrected into active cook states.
   let safePatch: Partial<RunRow> = patch;
-  if (current.status === "failed" || current.status === "exported") {
+  const terminal = current.status === "failed" || current.status === "exported" || current.status === "rejected";
+  if (terminal) {
     safePatch = { ...patch };
-    if (patch.status === "generating") safePatch.status = current.status;
-    // Tool tickers only pass { error } — do not overwrite the terminal failure/export message.
+    if (
+      patch.status === "generating" ||
+      patch.status === "queued" ||
+      patch.status === "stitching" ||
+      patch.status === "rework"
+    ) {
+      safePatch.status = current.status;
+    }
+    // Tool tickers only pass { error } — do not overwrite the terminal message.
     if (patch.error !== undefined && patch.status === undefined) safePatch.error = current.error;
   }
   const next = { ...current, ...safePatch, updated_at: nowIso() };
@@ -694,6 +702,49 @@ export async function finishJob(id: string, status: "done" | "error", error?: st
   getDb()
     .prepare("UPDATE jobs SET status=?, error=?, updated_at=? WHERE id=?")
     .run(status, error ?? null, nowIso(), id);
+}
+
+/** Mark pending/running jobs for a run as error (cancel / delete). */
+export async function errorBusyJobsForRun(runId: string, error: string): Promise<number> {
+  if (usePg()) return pg.pgErrorBusyJobsForRun(runId, error);
+  const ts = nowIso();
+  const result = getDb()
+    .prepare(
+      `UPDATE jobs SET status='error', error=?, updated_at=? WHERE run_id=? AND status IN ('pending','running')`,
+    )
+    .run(error, ts, runId);
+  return Number(result.changes ?? 0);
+}
+
+/**
+ * Plan already enqueued execute and set the run to queued, but the plan job is
+ * still "running" (e.g. hung post-job S3 persist). Release it so execute can claim.
+ */
+export async function releaseStuckArgonPlanJobs(): Promise<number> {
+  if (usePg()) return pg.pgReleaseStuckArgonPlanJobs();
+  const database = getDb();
+  const rows = database
+    .prepare(
+      `SELECT plan.id AS id FROM jobs plan
+       INNER JOIN runs r ON r.id = plan.run_id
+       WHERE plan.type = 'argon_plan'
+         AND plan.status = 'running'
+         AND r.status = 'queued'
+         AND EXISTS (
+           SELECT 1 FROM jobs ex
+           WHERE ex.run_id = plan.run_id
+             AND ex.type IN ('argon_execute', 'argon_task')
+             AND ex.status = 'pending'
+         )`,
+    )
+    .all() as Array<{ id: string }>;
+  const ts = nowIso();
+  for (const row of rows) {
+    database
+      .prepare("UPDATE jobs SET status='done', error=NULL, updated_at=? WHERE id=? AND status='running'")
+      .run(ts, row.id);
+  }
+  return rows.length;
 }
 
 export async function insertVariant(row: Omit<VariantRow, "created_at">): Promise<VariantRow> {

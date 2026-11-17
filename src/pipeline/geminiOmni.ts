@@ -7,8 +7,9 @@ import path from "node:path";
 import { GoogleGenAI, FileState } from "@google/genai";
 import type { OutputResolution } from "./constants";
 import { compressVideoForUpload, probeFile } from "./stitch";
-import { withGeminiAdmission } from "./geminiAdmission";
+import { currentGeminiOwnerId, withGeminiAdmission } from "./geminiAdmission";
 import { stageLocalPath } from "./geminiStaging";
+import { OMNI_SUBMIT_TIMEOUT_MS, getRunSignal, withDeadline } from "./runControl";
 
 export const OMNI_PIPELINE_SLUG = "google/gemini-omni-1.1-flash";
 export const OMNI_API_MODEL = "gemini-omni-1.1-flash";
@@ -350,11 +351,22 @@ async function generateOmniVideoAdmitted(opts: Parameters<typeof generateOmniVid
         : {}),
     });
 
+    const owner = currentGeminiOwnerId();
+    const signal = owner ? getRunSignal(owner) : undefined;
+    const submit = (parts: ContentPart[], taskName?: typeof task, label = "Gemini Omni submit") =>
+      withDeadline(ai.interactions.create(buildRequest(parts, taskName)), {
+        timeoutMs: OMNI_SUBMIT_TIMEOUT_MS,
+        label: `${label} (${OMNI_API_MODEL}, ${durationSec}s)`,
+        signal,
+        onStatus: opts.onStatus,
+      });
+
     let interaction;
     try {
-      interaction = await ai.interactions.create(buildRequest(input, task));
+      interaction = await submit(input, task);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (/timed out after|Cook cancelled/i.test(msg)) throw err;
       const blocked = /input blocked|content_blocked|prohibited use|sensitive words|request blocked|safety violation/i.test(msg);
       if (!blocked || !uploadedVideos.length) throw err;
 
@@ -379,7 +391,7 @@ async function generateOmniVideoAdmitted(opts: Parameters<typeof generateOmniVid
               textPayload.slice(0, 600),
             ].join("\n\n"),
       });
-      interaction = await ai.interactions.create(buildRequest(imageOnly, "image_to_video"));
+      interaction = await submit(imageOnly, "image_to_video", "Gemini Omni I2V fallback");
     }
 
     const status = String((interaction as { status?: string }).status ?? "");

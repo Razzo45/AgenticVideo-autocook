@@ -15,7 +15,37 @@ import {
 } from "@google/genai";
 import { BRAIN_MODEL } from "./constants";
 import { brainLabel } from "./brainChoice";
-import { withGeminiAdmission } from "./geminiAdmission";
+import { currentGeminiOwnerId, withGeminiAdmission } from "./geminiAdmission";
+import {
+  BRAIN_ROUND_TIMEOUT_MS,
+  getRunSignal,
+  isCancelledError,
+  isPlatformFaultError,
+  withDeadline,
+} from "./runControl";
+
+function brainCallSignal(): AbortSignal | undefined {
+  const owner = currentGeminiOwnerId();
+  return owner ? getRunSignal(owner) : undefined;
+}
+
+async function generateContentBounded<T>(
+  label: string,
+  work: () => Promise<T>,
+  onStatus?: (msg: string) => void,
+): Promise<T> {
+  return withGeminiAdmission(
+    "argon",
+    () =>
+      withDeadline(work(), {
+        timeoutMs: BRAIN_ROUND_TIMEOUT_MS,
+        label,
+        signal: brainCallSignal(),
+        onStatus,
+      }),
+    { onStatus },
+  );
+}
 
 export type BrainMessage = {
   role: "system" | "user" | "assistant";
@@ -91,8 +121,8 @@ export async function brainCompletion(opts: {
   const userParts = opts.userParts?.length ? opts.userParts : (parts as Part[]);
   if (!userParts.length) throw new Error("brainCompletion: empty user content");
 
-  return withGeminiAdmission("argon", async () => {
-    const result = await ai.models.generateContent({
+  const result = await generateContentBounded(`${brainLabel(model)} brain`, () =>
+    ai.models.generateContent({
       model,
       contents: [{ role: "user", parts: userParts }],
       config: {
@@ -102,11 +132,11 @@ export async function brainCompletion(opts: {
         // Argon thinking — medium is the API default; keep explicit for autocook planning.
         thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
       },
-    });
-    const text = (result.text ?? "").trim();
-    if (!text) throw new Error(`${brainLabel(model)} brain (${model}) returned no content`);
-    return text;
-  });
+    }),
+  );
+  const text = (result.text ?? "").trim();
+  if (!text) throw new Error(`${brainLabel(model)} brain (${model}) returned no content`);
+  return text;
 }
 
 /** Vision cataloguing via Argon (replaces OpenRouter visionCompletion for brain tasks). */
@@ -163,8 +193,8 @@ export async function brainWithTools(opts: {
 
   for (let round = 0; round < maxRounds; round++) {
     opts.onStatus?.(`${label} tool round ${round + 1}/${maxRounds}…`);
-    const result = await withGeminiAdmission(
-      "argon",
+    const result = await generateContentBounded(
+      `${label} tool round ${round + 1}/${maxRounds}`,
       () =>
         ai.models.generateContent({
           model,
@@ -175,7 +205,7 @@ export async function brainWithTools(opts: {
             thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
           },
         }),
-      { onStatus: opts.onStatus },
+      opts.onStatus,
     );
 
     const calls = result.functionCalls ?? [];
@@ -221,6 +251,8 @@ export async function brainWithTools(opts: {
       try {
         response = await opts.onTool(name, args);
       } catch (err) {
+        // Cancel / platform timeout → stop the cook. Tool contract mistakes → one pingback.
+        if (isCancelledError(err) || isPlatformFaultError(err)) throw err;
         response = {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
@@ -299,8 +331,8 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
       opts.onStatus?.(
         `${label} write_svg ${i + 1}/${opts.svgTargets.length} (${target.filename})…`,
       );
-      const result = await withGeminiAdmission(
-        "argon",
+      const result = await generateContentBounded(
+        `${label} write_svg ${i + 1}/${opts.svgTargets.length}`,
         () =>
           ai.models.generateContent({
             model,
@@ -317,7 +349,7 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
               thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
             },
           }),
-        { onStatus: opts.onStatus },
+        opts.onStatus,
       );
 
       const calls = result.functionCalls ?? [];
@@ -355,6 +387,7 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
         try {
           response = await opts.onTool(name, args);
         } catch (err) {
+          if (isCancelledError(err) || isPlatformFaultError(err)) throw err;
           response = { ok: false, error: err instanceof Error ? err.message : String(err) };
         }
         responseParts.push({
@@ -396,8 +429,8 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
   let emptyStreak = 0;
   for (let round = 0; round < 4; round++) {
     opts.onStatus?.(`${label} composing thin SVG JSON…`);
-    const result = await withGeminiAdmission(
-      "argon",
+    const result = await generateContentBounded(
+      `${label} composing thin SVG JSON`,
       () =>
         ai.models.generateContent({
           model,
@@ -411,7 +444,7 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
             thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
           },
         }),
-      { onStatus: opts.onStatus },
+      opts.onStatus,
     );
     const text = (result.text ?? "").trim();
     if (text) return text;

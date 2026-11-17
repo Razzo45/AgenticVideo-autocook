@@ -25,6 +25,7 @@ import { checklistComplete, scriptPlanSchema, type Checklist, type MetaRecord, t
 import {
   deleteRunRows,
   enqueueJob,
+  errorBusyJobsForRun,
   findRunByRequestId,
   finishJob,
   getDb,
@@ -93,6 +94,13 @@ import {
   storageMode,
 } from "./storage";
 import { sanitizeFinishedRun } from "./hygiene";
+import {
+  beginRunControl,
+  cancelRunControl,
+  endRunControl,
+  isCancelledError,
+  isPlatformFaultError,
+} from "./runControl";
 import {
   autoOptionsFromRun,
   autoRequirementsPrompt,
@@ -558,6 +566,7 @@ export async function processJob(job: JobRow): Promise<void> {
     return;
   }
   const payload = JSON.parse(job.payload_json || "{}") as { shotIndex?: number; sourceVariantId?: string };
+  beginRunControl(run.id);
   try {
     // GDP-style owner fairness: all Gemini calls in this job share run id.
     await withGeminiOwner(run.id, async () => {
@@ -581,8 +590,8 @@ export async function processJob(job: JobRow): Promise<void> {
       else if (job.type === "export") await jobExport(run);
       else throw new Error(`Unknown job ${job.type}`);
     });
-    // Bucket is canonical — upload after every job. Keep local scratch until the run
-    // finishes so the next step on this worker still sees keyframes/beds/clips.
+    // Mark done before bucket persist — hung S3 must not block the next job (e.g. execute after plan).
+    await finishJob(job.id, "done");
     try {
       const n = await persistRunTree(run.id);
       if (n && storageMode() === "s3") {
@@ -591,7 +600,6 @@ export async function processJob(job: JobRow): Promise<void> {
     } catch (persistErr) {
       console.error(`[storage] commit after ${job.type} failed for ${run.id}`, persistErr);
     }
-    await finishJob(job.id, "done");
     try {
       await advanceAutoRun(job.run_id);
     } catch (advErr) {
@@ -611,11 +619,13 @@ export async function processJob(job: JobRow): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const fresh = await getRun(run.id);
-  if (!fresh) throw new Error("Unknown run");
+    if (!fresh) {
+      await finishJob(job.id, "error", isCancelledError(err) ? "Cancelled" : message);
+      return;
+    }
     // Auto cook: re-queue overload once is enough via generateVideo backoff — do not
     // spawn unbounded delayed jobs after a hard fail (billing risk).
     if (
-      fresh &&
       isAutoRun(fresh) &&
       (isVideoCapacityError(message) || /overloaded|try again later|high load/i.test(message)) &&
       (job.type === "clips" || job.type === "keyframes")
@@ -635,8 +645,13 @@ export async function processJob(job: JobRow): Promise<void> {
       }
       return;
     }
-    if (fresh) await updateRun(fresh.id, { status: "failed", error: message });
-    await finishJob(job.id, "error", message);
+    const failMessage = isCancelledError(err)
+      ? "Cancelled — in-flight generation was stopped."
+      : isPlatformFaultError(err)
+        ? `Platform fault: ${message}`
+        : message;
+    await updateRun(fresh.id, { status: "failed", error: failMessage });
+    await finishJob(job.id, "error", failMessage);
     try {
       await persistRunTree(fresh.id);
       await sanitizeFinishedRun(fresh.id);
@@ -644,7 +659,9 @@ export async function processJob(job: JobRow): Promise<void> {
     } catch {
       /* best-effort */
     }
-    throw err;
+    if (!isCancelledError(err)) throw err;
+  } finally {
+    endRunControl(run.id);
   }
 }
 
@@ -2404,13 +2421,31 @@ async function requireWaiting(runId: string, gate: string): Promise<RunRow> {
   return run;
 }
 
+/**
+ * Cancel in-flight worker work for a run (AbortSignal), mark jobs errored, fail the run.
+ * Does not delete rows — use deleteRun to remove after stop.
+ */
+export async function cancelRun(runId: string, reason = "Cancelled by operator"): Promise<void> {
+  const run = await getRun(runId);
+  if (!run) throw new Error("Unknown run");
+  cancelRunControl(runId, reason);
+  await errorBusyJobsForRun(runId, reason);
+  if (run.status !== "exported" && run.status !== "failed" && run.status !== "rejected") {
+    await updateRun(runId, { status: "failed", gate: null, error: reason });
+  }
+}
+
 export async function deleteRun(runId: string): Promise<{ id: string; diskError?: string }> {
   const run = await getRun(runId);
   if (!run) throw new Error("Unknown run");
+  // Stop worker first — deleting rows alone left Gemini/ffmpeg finishing the GDP task.
+  cancelRunControl(runId, "Run deleted");
+  await errorBusyJobsForRun(runId, "Run deleted").catch(() => undefined);
   const dir = runDir(run.id);
   const sessionId = run.session_id;
   const exported = run.status === "exported" || run.counted === 1;
   await deleteRunRows(run.id);
+  endRunControl(runId);
   if (exported) purgeSessionFromDataset(sessionId);
   try {
     await deleteRunPrefix(run.id);

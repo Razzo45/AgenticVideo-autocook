@@ -10,7 +10,13 @@ import { promisify } from "node:util";
 import { GoogleGenAI, Type, type FunctionDeclaration } from "@google/genai";
 import sharp from "sharp";
 import { generateOmniVideo } from "../pipeline/geminiOmni";
-import { withGeminiAdmission } from "../pipeline/geminiAdmission";
+import { currentGeminiOwnerId, withGeminiAdmission } from "../pipeline/geminiAdmission";
+import {
+  IMAGE_GEN_TIMEOUT_MS,
+  PlatformFaultError,
+  getRunSignal,
+  withDeadline,
+} from "../pipeline/runControl";
 import type { HtmlMediaAsset } from "../pipeline/schemaDocs";
 import { probeFile } from "../pipeline/stitch";
 
@@ -209,20 +215,32 @@ async function generatePngBytes(prompt: string, referenceImagePaths: string[] = 
     const mime = /\.png$/i.test(ref) ? "image/png" : "image/jpeg";
     parts.push({ inlineData: { mimeType: mime, data: buf.toString("base64") } });
   }
-  return withGeminiAdmission("image", async () => {
-    const result = await ai.models.generateContent({
-      model: IMAGE_MODEL,
-      contents: [{ role: "user", parts }],
-      config: { responseModalities: ["IMAGE", "TEXT"] },
-    });
-    for (const c of result.candidates ?? []) {
-      for (const part of c.content?.parts ?? []) {
-        const data = (part as { inlineData?: { data?: string } }).inlineData;
-        if (data?.data) return Buffer.from(data.data, "base64");
-      }
-    }
-    throw new Error("generate_image: model returned no image bytes");
-  });
+  const owner = currentGeminiOwnerId();
+  return withGeminiAdmission(
+    "image",
+    () =>
+      withDeadline(
+        (async () => {
+          const result = await ai.models.generateContent({
+            model: IMAGE_MODEL,
+            contents: [{ role: "user", parts }],
+            config: { responseModalities: ["IMAGE", "TEXT"] },
+          });
+          for (const c of result.candidates ?? []) {
+            for (const part of c.content?.parts ?? []) {
+              const data = (part as { inlineData?: { data?: string } }).inlineData;
+              if (data?.data) return Buffer.from(data.data, "base64");
+            }
+          }
+          throw new Error("generate_image: model returned no image bytes");
+        })(),
+        {
+          timeoutMs: IMAGE_GEN_TIMEOUT_MS,
+          label: "generate_image",
+          signal: owner ? getRunSignal(owner) : undefined,
+        },
+      ),
+  );
 }
 
 export type MediaToolContext = {
@@ -319,16 +337,12 @@ async function fitStillWithSharp(
   } else {
     pipeline = pipeline.resize(width, height, { fit: "contain", background });
   }
-  const work = pipeline.png().toFile(outPath);
-  await Promise.race([
-    work,
-    new Promise<never>((_, reject) => {
-      setTimeout(
-        () => reject(new Error(`fit_image timed out after ${FIT_IMAGE_TIMEOUT_MS / 1000}s`)),
-        FIT_IMAGE_TIMEOUT_MS,
-      );
-    }),
-  ]);
+  const owner = currentGeminiOwnerId();
+  await withDeadline(pipeline.png().toFile(outPath), {
+    timeoutMs: FIT_IMAGE_TIMEOUT_MS,
+    label: "fit_image",
+    signal: owner ? getRunSignal(owner) : undefined,
+  });
 }
 
 /** Keep the run ticker alive during long encodes without changing status. */
@@ -385,21 +399,30 @@ function sourceNeedsFrameExtract(probe: { width: number; height: number; duratio
 }
 
 async function ffmpeg(args: string[], timeoutMs = FIT_VIDEO_TIMEOUT_MS): Promise<void> {
+  const owner = currentGeminiOwnerId();
+  const signal = owner ? getRunSignal(owner) : undefined;
   try {
-    await execFileAsync("ffmpeg", ["-hide_banner", "-nostdin", "-y", ...args], {
-      maxBuffer: 32 * 1024 * 1024,
-      windowsHide: true,
-      timeout: timeoutMs,
-      killSignal: "SIGKILL",
-    });
+    await withDeadline(
+      execFileAsync("ffmpeg", ["-hide_banner", "-nostdin", "-y", ...args], {
+        maxBuffer: 32 * 1024 * 1024,
+        windowsHide: true,
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+        signal,
+      }),
+      { timeoutMs: timeoutMs + 5_000, label: "ffmpeg", signal },
+    );
   } catch (err) {
+    if (err instanceof PlatformFaultError) throw err;
     const execErr = err as { message?: string; stderr?: string | Buffer; killed?: boolean; code?: string | number };
     if (execErr.killed || execErr.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
-      throw new Error(`ffmpeg timed out or overflowed after ${Math.round(timeoutMs / 1000)}s`);
+      throw new PlatformFaultError(`ffmpeg timed out or overflowed after ${Math.round(timeoutMs / 1000)}s`);
     }
     const stderr = typeof execErr.stderr === "string" ? execErr.stderr : execErr.stderr?.toString?.() ?? "";
     const timedOut = /TIMEDOUT|timeout/i.test(execErr.message ?? "") || /SIGKILL|killed/i.test(stderr);
-    if (timedOut) throw new Error(`ffmpeg timed out after ${Math.round(timeoutMs / 1000)}s`);
+    if (timedOut) throw new PlatformFaultError(`ffmpeg timed out after ${Math.round(timeoutMs / 1000)}s`);
+    const aborted = /AbortError|aborted/i.test(execErr.message ?? "");
+    if (aborted) throw new PlatformFaultError("ffmpeg aborted");
     const tail = stderr
       .split(/\r?\n/)
       .map((line) => line.trim())

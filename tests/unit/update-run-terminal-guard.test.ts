@@ -22,4 +22,25 @@ describe("updateRun terminal ticker guard", () => {
     assert.equal(fresh?.status, "failed");
     assert.equal(fresh?.error, "fit_image timed out after 60s");
   });
+
+  it("blocks queued/stitching resurrection after failed and after rejected", async () => {
+    const { createRun } = await import("../../src/pipeline/orchestrator");
+    const { getRun, updateRun } = await import("../../src/db/index");
+    const run = await createRun({
+      prompt: "guard-fsm",
+      category: "Short Drama / Film & TV",
+      duration: 1,
+      aspect: "9:16",
+      pipelineMode: "task",
+      userId: "unit-terminal-fsm",
+    });
+    await updateRun(run.id, { status: "failed", error: "Cancelled" });
+    await updateRun(run.id, { status: "queued" });
+    assert.equal((await getRun(run.id))?.status, "failed");
+
+    await updateRun(run.id, { status: "rejected", error: "nope" });
+    await updateRun(run.id, { status: "stitching" });
+    assert.equal((await getRun(run.id))?.status, "rejected");
+  });
 });
+

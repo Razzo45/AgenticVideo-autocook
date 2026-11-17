@@ -23,6 +23,7 @@ import {
   HeadBucketCommand,
 } from "@aws-sdk/client-s3";
 import { RUNS_DIR, toPosix } from "./paths";
+import { getRunSignal, PlatformFaultError, S3_PUT_TIMEOUT_MS, withDeadline } from "./runControl";
 
 function envFirst(...keys: string[]): string {
   for (const k of keys) {
@@ -147,15 +148,41 @@ export async function persistRunFile(absPath: string): Promise<string> {
   if (storageMode() !== "s3") return abs;
   const st = fs.statSync(abs);
   const body = fs.createReadStream(abs);
-  await s3Client().send(
-    new PutObjectCommand({
-      Bucket: bucket(),
-      Key: `runs/${parsed.runId}/${parsed.rel}`,
-      Body: body,
-      ContentLength: st.size,
-      ContentType: guessContentType(parsed.rel),
-    }),
-  );
+  try {
+    const runSignal = getRunSignal(parsed.runId);
+    const timeoutSignal = AbortSignal.timeout(S3_PUT_TIMEOUT_MS);
+    const abortSignal =
+      runSignal && typeof AbortSignal.any === "function"
+        ? AbortSignal.any([runSignal, timeoutSignal])
+        : runSignal ?? timeoutSignal;
+    await withDeadline(
+      s3Client().send(
+        new PutObjectCommand({
+          Bucket: bucket(),
+          Key: `runs/${parsed.runId}/${parsed.rel}`,
+          Body: body,
+          ContentLength: st.size,
+          ContentType: guessContentType(parsed.rel),
+        }),
+        { abortSignal },
+      ),
+      {
+        timeoutMs: S3_PUT_TIMEOUT_MS + 5_000,
+        label: `S3 put ${parsed.rel}`,
+        signal: runSignal,
+      },
+    );
+  } catch (err) {
+    try {
+      body.destroy();
+    } catch {
+      /* ignore */
+    }
+    if (err instanceof PlatformFaultError) throw err;
+    throw new PlatformFaultError(
+      `S3 put failed for ${parsed.rel}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
   return abs;
 }
 
