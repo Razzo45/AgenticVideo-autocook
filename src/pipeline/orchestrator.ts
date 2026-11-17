@@ -581,8 +581,9 @@ export async function processJob(job: JobRow): Promise<void> {
       else if (job.type === "export") await jobExport(run);
       else throw new Error(`Unknown job ${job.type}`);
     });
-    // Bucket is canonical — upload after every job. Keep local scratch until the run
-    // finishes so the next step on this worker still sees keyframes/beds/clips.
+    // Mark done before bucket persist — a hung S3 upload must not leave the job
+    // "running" and block the same run's next step (e.g. argon_execute after plan).
+    await finishJob(job.id, "done");
     try {
       const n = await persistRunTree(run.id);
       if (n && storageMode() === "s3") {
@@ -591,7 +592,6 @@ export async function processJob(job: JobRow): Promise<void> {
     } catch (persistErr) {
       console.error(`[storage] commit after ${job.type} failed for ${run.id}`, persistErr);
     }
-    await finishJob(job.id, "done");
     try {
       await advanceAutoRun(job.run_id);
     } catch (advErr) {

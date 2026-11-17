@@ -362,6 +362,30 @@ export async function pgFinishJob(id: string, status: "done" | "error", error?: 
   ]);
 }
 
+/** See releaseStuckArgonPlanJobs — unblock execute when plan finished but job row is stuck running. */
+export async function pgReleaseStuckArgonPlanJobs(): Promise<number> {
+  const rows = await pgQuery<{ id: string }>(
+    `SELECT plan.id AS id FROM app.jobs plan
+     INNER JOIN app.runs r ON r.id = plan.run_id
+     WHERE plan.type = 'argon_plan'
+       AND plan.status = 'running'
+       AND r.status = 'queued'
+       AND EXISTS (
+         SELECT 1 FROM app.jobs ex
+         WHERE ex.run_id = plan.run_id
+           AND ex.type IN ('argon_execute', 'argon_task')
+           AND ex.status = 'pending'
+       )`,
+  );
+  for (const row of rows) {
+    await pgQuery(
+      `UPDATE app.jobs SET status='done', error=NULL, updated_at=now() WHERE id=$1 AND status='running'`,
+      [row.id],
+    );
+  }
+  return rows.length;
+}
+
 export async function pgJobQueueStats(): Promise<{ running: number; pending: number }> {
   const rows = await pgQuery<{ running: string; pending: string }>(
     `SELECT

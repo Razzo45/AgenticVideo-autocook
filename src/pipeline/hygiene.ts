@@ -10,7 +10,15 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { getDb, getRun, listRuns, runHasBusyJobs, updateRun, type RunRow } from "../db";
+import {
+  getDb,
+  getRun,
+  listRuns,
+  releaseStuckArgonPlanJobs,
+  runHasBusyJobs,
+  updateRun,
+  type RunRow,
+} from "../db";
 import { RUNS_DIR, runDir } from "./paths";
 import { deleteRunPrefix, storageMode } from "./storage";
 import { reapGeminiFiles } from "./geminiStaging";
@@ -168,10 +176,12 @@ export async function runHygieneSweep(): Promise<{
   runsDeleted: number;
   geminiCulled: number;
   orphansFailed?: number;
+  stuckPlansReleased?: number;
 }> {
   let stagingPurged = 0;
   let runsDeleted = 0;
   const now = Date.now();
+  const stuckPlansReleased = await releaseStuckArgonPlanJobs();
   const orphansFailed = await failOrphanGeneratingRuns(now);
 
   let runs: RunRow[] = [];
@@ -221,5 +231,5 @@ export async function runHygieneSweep(): Promise<{
   }
 
   const { culled } = await reapGeminiFiles();
-  return { stagingPurged, runsDeleted, geminiCulled: culled, orphansFailed };
+  return { stagingPurged, runsDeleted, geminiCulled: culled, orphansFailed, stuckPlansReleased };
 }

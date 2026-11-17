@@ -47,6 +47,45 @@ describe("finished-run hygiene", () => {
   });
 });
 
+describe("stuck argon_plan after enqueue", () => {
+  it("releases a running plan when execute is already pending and the run is queued", async () => {
+    const { createRun } = await import("../../src/pipeline/orchestrator");
+    const { getDb, releaseStuckArgonPlanJobs } = await import("../../src/db/index");
+    const run = await createRun({
+      prompt: "tokyo cover",
+      category: "Short Drama / Film & TV",
+      duration: 1,
+      aspect: "9:16",
+      pipelineMode: "task",
+      userId: "unit-stuck-plan",
+    });
+    const db = getDb();
+    db.prepare("UPDATE jobs SET status='done' WHERE run_id=?").run(run.id);
+    const planId = `job_plan_${run.id}`;
+    const execId = `job_exec_${run.id}`;
+    db.prepare(
+      `INSERT INTO jobs (id, run_id, type, status, payload_json, weight, task_weight, heavy, archive, created_at, updated_at)
+       VALUES (?, ?, 'argon_plan', 'running', '{}', 1, 1, 0, 0, ?, ?)`,
+    ).run(planId, run.id, new Date().toISOString(), new Date().toISOString());
+    db.prepare(
+      `INSERT INTO jobs (id, run_id, type, status, payload_json, weight, task_weight, heavy, archive, created_at, updated_at)
+       VALUES (?, ?, 'argon_execute', 'pending', '{}', 1, 40, 0, 0, ?, ?)`,
+    ).run(execId, run.id, new Date().toISOString(), new Date().toISOString());
+    db.prepare("UPDATE runs SET status='queued', error=?, updated_at=? WHERE id=?").run(
+      "Carbon is queued for deliverables (1 video, 1 image) — weight 40",
+      new Date().toISOString(),
+      run.id,
+    );
+
+    const released = await releaseStuckArgonPlanJobs();
+    assert.ok(released >= 1);
+    const plan = db.prepare("SELECT status FROM jobs WHERE id=?").get(planId) as { status: string };
+    assert.equal(plan.status, "done");
+    const exec = db.prepare("SELECT status FROM jobs WHERE id=?").get(execId) as { status: string };
+    assert.equal(exec.status, "pending");
+  });
+});
+
 describe("orphan generating runs", () => {
   it("fails a generating run with no job after the idle window", async () => {
     const { createRun } = await import("../../src/pipeline/orchestrator");
