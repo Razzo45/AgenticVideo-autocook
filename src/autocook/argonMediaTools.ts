@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { GoogleGenAI, Type, type FunctionDeclaration } from "@google/genai";
+import sharp from "sharp";
 import { generateOmniVideo } from "../pipeline/geminiOmni";
 import { withGeminiAdmission } from "../pipeline/geminiAdmission";
 import type { HtmlMediaAsset } from "../pipeline/schemaDocs";
@@ -102,7 +103,7 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "fit_video",
     description:
-      "Resize, pad, crop, trim, or loop an existing MP4. Does not regenerate the picture. Width and height are rounded to even pixels. duration_sec may be longer than 10 by looping, or shorter by trimming. contain pads, cover crops, stretch scales.",
+      "Resize, pad, crop, trim, or loop an existing MP4. Does not regenerate the picture. Width and height are rounded to even pixels. duration_sec may be longer than 10 by looping, or shorter by trimming. contain pads, cover crops, stretch scales. audio keep preserves source audio; mute strips it before encode.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -115,6 +116,10 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         duration_sec: { type: Type.NUMBER, description: "Output length. Longer than the source loops it." },
         fit: { type: Type.STRING, description: "contain, cover, or stretch. Default contain." },
         pad_color: { type: Type.STRING, description: "Hex color for contain padding, default 000000." },
+        audio: {
+          type: Type.STRING,
+          description: "keep (default) preserves source audio when present; mute strips audio before encode.",
+        },
       },
       required: ["id", "source", "filename"],
     },
@@ -122,7 +127,7 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "join_videos",
     description:
-      "Place existing MP4s one after another, in the order given. Each clip is padded to the first clip's frame size. Use this when the job is longer than one generate_video call.",
+      "Place existing MP4s one after another, in the order given. Each clip is padded to the first clip's frame size. Use this when the job is longer than one generate_video call. audio keep concatenates audio when every clip has it; mute strips audio.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -132,6 +137,10 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
           type: Type.ARRAY,
           items: { type: Type.STRING },
           description: "Staged ids or filenames, in play order.",
+        },
+        audio: {
+          type: Type.STRING,
+          description: "keep (default) or mute. Mixed audio across clips is rejected when keep.",
         },
       },
       required: ["id", "filename", "clips"],
@@ -252,6 +261,13 @@ function fitMode(value: unknown): "contain" | "cover" | "stretch" {
   return "contain";
 }
 
+/** Brain/platform intent — never invent mute from probes alone. */
+function audioMode(value: unknown): "keep" | "mute" {
+  const mode = String(value ?? "keep").trim().toLowerCase();
+  if (mode === "mute" || mode === "silent" || mode === "none" || mode === "strip") return "mute";
+  return "keep";
+}
+
 function padColor(value: unknown, fallback: string): string {
   const hex = String(value ?? fallback).trim().replace(/^#/, "");
   if (/^[0-9A-Fa-f]{6}$/.test(hex)) return `0x${hex}`;
@@ -269,6 +285,64 @@ function scaleFilter(width: number, height: number, fit: "contain" | "cover" | "
     return `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`;
   }
   return `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${color}`;
+}
+
+function sharpPadColor(value: string): { r: number; g: number; b: number; alpha: number } {
+  const hex = String(value ?? "FFFFFF").trim().replace(/^#/, "").replace(/^0x/i, "");
+  const body = /^[0-9A-Fa-f]{6}$/.test(hex) ? hex : "FFFFFF";
+  const n = Number.parseInt(body, 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255, alpha: 1 };
+}
+
+/** ~100MP cap — refuse decompression bombs without cook-specific size heuristics. */
+const SHARP_MAX_INPUT_PIXELS = 100_000_000;
+
+/** Resize a still with sharp — avoids live ffmpeg hangs on cover fits. */
+async function fitStillWithSharp(
+  source: string,
+  outPath: string,
+  width: number,
+  height: number,
+  fit: "contain" | "cover" | "stretch",
+  padColorHex: string,
+): Promise<void> {
+  const background = sharpPadColor(padColorHex);
+  let pipeline = sharp(source, {
+    failOn: "none",
+    animated: false,
+    limitInputPixels: SHARP_MAX_INPUT_PIXELS,
+  }).rotate();
+  if (fit === "cover") {
+    pipeline = pipeline.resize(width, height, { fit: "cover", position: "centre" });
+  } else if (fit === "stretch") {
+    pipeline = pipeline.resize(width, height, { fit: "fill" });
+  } else {
+    pipeline = pipeline.resize(width, height, { fit: "contain", background });
+  }
+  const work = pipeline.png().toFile(outPath);
+  await Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      setTimeout(
+        () => reject(new Error(`fit_image timed out after ${FIT_IMAGE_TIMEOUT_MS / 1000}s`)),
+        FIT_IMAGE_TIMEOUT_MS,
+      );
+    }),
+  ]);
+}
+
+/** Keep the run ticker alive during long encodes without changing status. */
+function withStatusHeartbeat<T>(
+  ctx: MediaToolContext,
+  label: string,
+  work: Promise<T>,
+  intervalMs = 15_000,
+): Promise<T> {
+  if (!ctx.onStatus) return work;
+  const timer = setInterval(() => {
+    ctx.onStatus?.(toolStatus(ctx, `${label} (still working)…`));
+  }, intervalMs);
+  return work.finally(() => clearInterval(timer));
 }
 
 /**
@@ -304,6 +378,11 @@ const FIT_IMAGE_TIMEOUT_MS = 60_000;
 const FIT_VIDEO_TIMEOUT_MS = 3 * 60_000;
 const JOIN_VIDEOS_TIMEOUT_MS = 10 * 60_000;
 const PROBE_TIMEOUT_MS = 30_000;
+
+/** Treat as motion when probe reports meaningful duration — not by file extension. */
+function sourceNeedsFrameExtract(probe: { width: number; height: number; duration: number | null }): boolean {
+  return (probe.duration ?? 0) > 0.2;
+}
 
 async function ffmpeg(args: string[], timeoutMs = FIT_VIDEO_TIMEOUT_MS): Promise<void> {
   try {
@@ -473,31 +552,36 @@ export async function executeArgonMediaTool(
     const source = resolveSource(ctx, String(args.source ?? args.source_id ?? ""));
     const sourceStat = fs.statSync(source);
     if (sourceStat.size < 32) throw new Error(`fit_image: source is empty (${path.basename(source)})`);
+    ctx.onStatus?.(toolStatus(ctx, `fit_image (${id}, ${width}x${height} ${fit})…`));
+    const absPath = path.join(ctx.stagingDir, filename);
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    // Classify by probe (not extension): stills → sharp; motion → one frame then sharp.
     const sourceProbe = await probeSource(source);
     if (!(sourceProbe.width > 0 && sourceProbe.height > 0)) {
       throw new Error(`fit_image: source has no video/image frame (${path.basename(source)})`);
     }
-    // A long video as "cover" used to hang live ffmpeg with no timeout. Cap the demux.
-    const looksStill = /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(source);
-    const isTimedMedia = !looksStill && (sourceProbe.duration ?? 0) > 0.2;
-    ctx.onStatus?.(toolStatus(ctx, `fit_image (${id}, ${width}x${height} ${fit})…`));
-    const absPath = path.join(ctx.stagingDir, filename);
-    fs.mkdirSync(path.dirname(absPath), { recursive: true });
-    await ffmpegOut(
-      absPath,
-      [
-        ...(isTimedMedia ? ["-ss", "0", "-t", "1"] : []),
-        "-i",
-        source,
-        "-vf",
-        scaleFilter(width, height, fit, padColor(args.pad_color, "FFFFFF")),
-        "-frames:v",
-        "1",
-      ],
-      FIT_IMAGE_TIMEOUT_MS,
-    );
+    let stillPath = source;
+    let tmpFrame: string | null = null;
+    try {
+      if (sourceNeedsFrameExtract(sourceProbe)) {
+        tmpFrame = path.join(ctx.stagingDir, `.${process.pid}.${id}.frame.png`);
+        await ffmpegOut(
+          tmpFrame,
+          ["-ss", "0", "-t", "1", "-i", source, "-frames:v", "1", "-an"],
+          FIT_IMAGE_TIMEOUT_MS,
+        );
+        stillPath = tmpFrame;
+      }
+      await withStatusHeartbeat(
+        ctx,
+        `fit_image (${id})`,
+        fitStillWithSharp(stillPath, absPath, width, height, fit, String(args.pad_color ?? "FFFFFF")),
+      );
+    } finally {
+      if (tmpFrame) fs.rmSync(tmpFrame, { force: true });
+    }
     const buf = fs.readFileSync(absPath);
-    const probed = await probeSource(absPath);
+    const meta = await sharp(absPath).metadata();
     remember(ctx, {
       id,
       format: "png",
@@ -512,8 +596,8 @@ export async function executeArgonMediaTool(
       id,
       filename,
       mime: "image/png",
-      width: probed.width,
-      height: probed.height,
+      width: meta.width ?? width,
+      height: meta.height ?? height,
       fit,
       bytes: buf.length,
     };
@@ -624,25 +708,40 @@ export async function executeArgonMediaTool(
     if (duration != null && (!Number.isFinite(duration) || duration <= 0 || duration > 600)) {
       throw new Error("duration_sec must be between 0 and 600");
     }
-    ctx.onStatus?.(toolStatus(ctx, `fit_video (${id}, ${outW}x${outH})…`));
+    const audio = audioMode(args.audio);
+    const keepAudio = audio === "keep" && probedIn.hasAudio;
+    ctx.onStatus?.(toolStatus(ctx, `fit_video (${id}, ${outW}x${outH}, audio ${audio})…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     const sourceDur = probedIn.duration ?? 0;
     const loop = duration != null && sourceDur > 0 && duration > sourceDur + 0.05;
+    const resizeNeeded =
+      outW !== evenPixels(probedIn.width || outW) ||
+      outH !== evenPixels(probedIn.height || outH) ||
+      duration != null ||
+      loop;
     const argsFfmpeg = [
       ...(loop ? ["-stream_loop", "-1"] : []),
       "-i",
       source,
-      "-vf",
-      `${scaleFilter(outW, outH, fit, padColor(args.pad_color, "000000"))},setsar=1`,
+      ...(resizeNeeded
+        ? ["-vf", `${scaleFilter(outW, outH, fit, padColor(args.pad_color, "000000"))},setsar=1`]
+        : []),
       ...(duration != null ? ["-t", duration.toFixed(3)] : []),
       "-c:v",
-      "libx264",
-      "-pix_fmt",
-      "yuv420p",
-      ...(probedIn.hasAudio ? ["-c:a", "aac"] : ["-an"]),
+      resizeNeeded ? "libx264" : "copy",
+      ...(resizeNeeded ? ["-pix_fmt", "yuv420p"] : []),
+      ...(keepAudio
+        ? loop
+          ? ["-c:a", resizeNeeded ? "aac" : "copy", "-shortest"]
+          : ["-c:a", resizeNeeded ? "aac" : "copy"]
+        : ["-an"]),
     ];
-    await ffmpegOut(absPath, argsFfmpeg, FIT_VIDEO_TIMEOUT_MS);
+    await withStatusHeartbeat(
+      ctx,
+      `fit_video (${id})`,
+      ffmpegOut(absPath, argsFfmpeg, FIT_VIDEO_TIMEOUT_MS),
+    );
     const probed = await probeSource(absPath);
     remember(ctx, { id, format: "mp4", filename, absPath, embed: "path", mime: "video/mp4" });
     return {
@@ -654,6 +753,8 @@ export async function executeArgonMediaTool(
       height: probed.height,
       duration_sec: probed.duration,
       fit,
+      audio,
+      has_audio: probed.hasAudio,
       bytes: fs.statSync(absPath).size,
     };
   }
@@ -669,8 +770,19 @@ export async function executeArgonMediaTool(
     // Normalize fps — concat fails when Omni (often 24) meets plate footage (often 25).
     const fps = first.fps && first.fps > 0 ? Math.round(first.fps * 1000) / 1000 : 24;
     const probes = await Promise.all(sources.map((src) => probeSource(src)));
-    const withAudio = probes.every((probe) => probe.hasAudio);
-    ctx.onStatus?.(toolStatus(ctx, `join_videos (${id}, ${clips.length} clips)…`));
+    const audio = audioMode(args.audio);
+    const audioCount = probes.filter((probe) => probe.hasAudio).length;
+    let withAudio = false;
+    if (audio === "mute") {
+      withAudio = false;
+    } else if (audioCount > 0 && audioCount < probes.length) {
+      throw new Error(
+        `join_videos: audio keep requires every clip to have audio, or none — got ${audioCount}/${probes.length}. Set audio to mute to strip, or give every clip audio.`,
+      );
+    } else {
+      withAudio = audioCount === probes.length && audioCount > 0;
+    }
+    ctx.onStatus?.(toolStatus(ctx, `join_videos (${id}, ${clips.length} clips, audio ${audio})…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     const filterComplex = buildJoinVideosFilter({
@@ -680,23 +792,27 @@ export async function executeArgonMediaTool(
       fps,
       withAudio,
     });
-    await ffmpegOut(
-      absPath,
-      [
-        ...sources.flatMap((src) => ["-i", src]),
-        "-filter_complex",
-        filterComplex,
-        "-map",
-        "[v]",
-        ...(withAudio ? ["-map", "[a]", "-c:a", "aac", "-ar", "48000", "-ac", "2"] : ["-an"]),
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-r",
-        String(fps),
-      ],
-      JOIN_VIDEOS_TIMEOUT_MS,
+    await withStatusHeartbeat(
+      ctx,
+      `join_videos (${id})`,
+      ffmpegOut(
+        absPath,
+        [
+          ...sources.flatMap((src) => ["-i", src]),
+          "-filter_complex",
+          filterComplex,
+          "-map",
+          "[v]",
+          ...(withAudio ? ["-map", "[a]", "-c:a", "aac", "-ar", "48000", "-ac", "2"] : ["-an"]),
+          "-c:v",
+          "libx264",
+          "-pix_fmt",
+          "yuv420p",
+          "-r",
+          String(fps),
+        ],
+        JOIN_VIDEOS_TIMEOUT_MS,
+      ),
     );
     const probed = await probeSource(absPath);
     remember(ctx, { id, format: "mp4", filename, absPath, embed: "path", mime: "video/mp4" });
@@ -709,6 +825,8 @@ export async function executeArgonMediaTool(
       height: probed.height,
       duration_sec: probed.duration,
       clips: clips.length,
+      audio,
+      has_audio: probed.hasAudio,
       bytes: fs.statSync(absPath).size,
     };
   }

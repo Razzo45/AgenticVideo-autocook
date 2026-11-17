@@ -113,6 +113,8 @@ export const deliverableSchema = z.object({
   duration_sec: z.number().positive().optional(),
   fit: z.enum(["contain", "cover", "stretch"]).optional(),
   pad_color: z.string().optional(),
+  /** Brain intent: keep plate/generator audio, or strip it before the platform encode. */
+  audio: z.enum(["keep", "mute"]).optional(),
   speech: z.array(speechSchema).optional(),
   music: musicSchema.optional(),
   places: z.array(z.string().min(1)).optional(),
@@ -185,6 +187,7 @@ kind "video" — "clips" in play order.
 {"file":"exact-name.mp4"} places an attached clip.
 {"prompt":"...","duration_sec":6,"aspect":"16:9","references":["exact-name.png"]} generates one. A generated clip is 3–10 seconds and 16:9 or 9:16.
 width, height, and duration_sec on the deliverable are the finished file. The platform joins the clips and fits that file.
+"audio":"keep" keeps plate/generator audio through join/fit (only the size/duration/order work you asked for). "audio":"mute" strips audio before that encode. Set this from the job — the platform does not invent mute vs keep.
 
 kind "audio" — attached files play first, then speech, and a bed is mixed under that.
 "places":["exact-name.wav"] or "source":{"kind":"place","file":"exact-name.wav"}
@@ -735,17 +738,19 @@ async function buildVideo(
       return id;
     }),
   );
+  const audio = item.audio === "mute" ? "mute" : "keep";
   let currentId = ids[0]!;
   if (ids.length > 1) {
     const joined = safeId(`${item.id}-joined`);
     await executeArgonMediaTool(
       "join_videos",
-      { id: joined, clips: ids, filename: `slots/${joined}.mp4` },
+      { id: joined, clips: ids, filename: `slots/${joined}.mp4`, audio },
       ctx,
     );
     currentId = joined;
   }
-  if (item.width || item.height || item.duration_sec) {
+  // Fit when size/duration is set, or when mute must strip audio before deliver.
+  if (item.width || item.height || item.duration_sec || audio === "mute") {
     const fitted = safeId(`${item.id}-fitted`);
     await executeArgonMediaTool(
       "fit_video",
@@ -758,6 +763,7 @@ async function buildVideo(
         duration_sec: item.duration_sec,
         fit: item.fit,
         pad_color: item.pad_color,
+        audio,
       },
       ctx,
     );
@@ -1536,13 +1542,21 @@ async function concatAudio(files: string[], dest: string): Promise<void> {
   ]);
 }
 
-async function ffmpeg(args: string[]): Promise<void> {
+const COMPOSITION_FFMPEG_TIMEOUT_MS = 10 * 60_000;
+
+async function ffmpeg(args: string[], timeoutMs = COMPOSITION_FFMPEG_TIMEOUT_MS): Promise<void> {
   try {
     await execFileAsync("ffmpeg", ["-hide_banner", "-nostdin", "-y", ...args], {
       maxBuffer: 32 * 1024 * 1024,
       windowsHide: true,
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
     });
   } catch (err) {
+    const execErr = err as { message?: string; killed?: boolean; code?: string | number };
+    if (execErr.killed || execErr.code === "ETIMEDOUT") {
+      throw new Error(`ffmpeg timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`ffmpeg failed: ${message.slice(0, 500)}`);
   }

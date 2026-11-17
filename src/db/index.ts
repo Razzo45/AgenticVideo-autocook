@@ -369,7 +369,15 @@ export async function updateRun(id: string, patch: Partial<RunRow>): Promise<voi
   if (usePg()) return pg.pgUpdateRun(id, patch);
   const current = await getRun(id);
   if (!current) throw new Error(`Unknown run ${id}`);
-  const next = { ...current, ...patch, updated_at: nowIso() };
+  // Ignore late fire-and-forget ticker writes after the run already failed/exported.
+  let safePatch: Partial<RunRow> = patch;
+  if (current.status === "failed" || current.status === "exported") {
+    safePatch = { ...patch };
+    if (patch.status === "generating") safePatch.status = current.status;
+    // Tool tickers only pass { error } — do not overwrite the terminal failure/export message.
+    if (patch.error !== undefined && patch.status === undefined) safePatch.error = current.error;
+  }
+  const next = { ...current, ...safePatch, updated_at: nowIso() };
   getDb()
     .prepare(
       `UPDATE runs SET

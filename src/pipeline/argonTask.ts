@@ -207,14 +207,15 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
     filesByName,
     namedReferencesOnly: true,
     brainLabel: label,
+    // Ticker only — never force status generating (late updates were resurrecting failed runs).
     onStatus: (msg) => {
-      void updateRun(run.id, { error: msg, status: "generating" });
+      void updateRun(run.id, { error: msg });
     },
   };
 
   const svgTargets = plannedSvgTargets(plan?.deliverables ?? []);
   const onBrainStatus = (msg: string) => {
-    void updateRun(run.id, { error: msg, status: "generating" });
+    void updateRun(run.id, { error: msg });
   };
   const onBrainTool = (name: string, args: Record<string, unknown>) =>
     executeArgonMediaTool(name, args, toolCtx);
@@ -279,7 +280,7 @@ export async function jobArgonTask(run: RunRow): Promise<void> {
     ownerId: run.id,
     brainLabel: label,
     onStatus: (msg) => {
-      void updateRun(run.id, { error: msg, status: "generating" });
+      void updateRun(run.id, { error: msg });
     },
   });
   if (!built.length) throw new Error(`${label} finished without creating a file`);

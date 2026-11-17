@@ -16,6 +16,23 @@ describe("composition parse", () => {
     assert.match(text, /Deck\.pptx/);
     assert.match(text, /write_svg/);
     assert.match(text, /one write_svg per turn/);
+    assert.match(text, /"audio":"keep"/);
+    assert.match(text, /"audio":"mute"/);
+  });
+
+  it("accepts video audio keep or mute from the brain", () => {
+    const keep = parseComposition(
+      JSON.stringify({
+        deliverables: [{ kind: "video", filename: "A.mp4", clips: [{ file: "a.mp4" }], audio: "keep" }],
+      }),
+    );
+    const mute = parseComposition(
+      JSON.stringify({
+        deliverables: [{ kind: "video", filename: "B.mp4", clips: [{ file: "b.mp4" }], audio: "mute" }],
+      }),
+    );
+    assert.equal(keep.deliverables[0]?.audio, "keep");
+    assert.equal(mute.deliverables[0]?.audio, "mute");
   });
 
   it("lists planned SVG targets for guided write_svg", () => {

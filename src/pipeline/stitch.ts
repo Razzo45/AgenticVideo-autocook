@@ -6,13 +6,28 @@ import { CONTINUATION_TRIM_SEC, STITCH_FPS, type OutputResolution, type VideoAsp
 
 const execFileAsync = promisify(execFile);
 const FF_OPTS = { maxBuffer: 32 * 1024 * 1024, windowsHide: true as const };
+const PROBE_TIMEOUT_MS = 30_000;
+const FRAME_EXTRACT_TIMEOUT_MS = 60_000;
 
-function ffmpeg(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync("ffmpeg", ["-hide_banner", "-nostdin", ...args], FF_OPTS);
+function ffmpeg(
+  args: string[],
+  timeoutMs?: number,
+): Promise<{ stdout: string; stderr: string }> {
+  return execFileAsync("ffmpeg", ["-hide_banner", "-nostdin", ...args], {
+    ...FF_OPTS,
+    ...(timeoutMs != null ? { timeout: timeoutMs, killSignal: "SIGKILL" as const } : {}),
+  });
 }
 
-function ffprobe(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync("ffprobe", args, FF_OPTS);
+function ffprobe(
+  args: string[],
+  timeoutMs = PROBE_TIMEOUT_MS,
+): Promise<{ stdout: string; stderr: string }> {
+  return execFileAsync("ffprobe", args, {
+    ...FF_OPTS,
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
+  });
 }
 
 export type Probe = {
@@ -110,7 +125,7 @@ export async function detectBlackBars(filePath: string): Promise<{ w: number; h:
 
 export async function extractFirstFrame(videoPath: string, outPng: string): Promise<void> {
   fs.mkdirSync(path.dirname(outPng), { recursive: true });
-  await ffmpeg(["-y", "-i", videoPath, "-frames:v", "1", "-update", "1", outPng]);
+  await ffmpeg(["-y", "-i", videoPath, "-frames:v", "1", "-update", "1", outPng], FRAME_EXTRACT_TIMEOUT_MS);
 }
 
 /**
