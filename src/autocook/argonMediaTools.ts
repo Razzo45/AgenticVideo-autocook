@@ -271,6 +271,35 @@ function scaleFilter(width: number, height: number, fit: "contain" | "cover" | "
   return `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${color}`;
 }
 
+/**
+ * Build the join_videos filter_complex graph.
+ * ffmpeg concat with audio expects interleaved pads per segment: [v0][a0][v1][a1]…
+ * (not all videos then all audios — that yields "Media type mismatch" on live Omni joins).
+ */
+export function buildJoinVideosFilter(opts: {
+  clipCount: number;
+  width: number;
+  height: number;
+  fps: number;
+  withAudio: boolean;
+}): string {
+  const { clipCount, width, height, fps, withAudio } = opts;
+  const chains = Array.from({ length: clipCount }, (_, index) => {
+    const video = `[${index}:v]fps=${fps},scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=0x000000,setsar=1,format=yuv420p[v${index}]`;
+    const audio = withAudio
+      ? `;[${index}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a${index}]`
+      : "";
+    return video + audio;
+  });
+  const concatInputs = withAudio
+    ? Array.from({ length: clipCount }, (_, index) => `[v${index}][a${index}]`).join("")
+    : Array.from({ length: clipCount }, (_, index) => `[v${index}]`).join("");
+  const concat = withAudio
+    ? `${concatInputs}concat=n=${clipCount}:v=1:a=1[v][a]`
+    : `${concatInputs}concat=n=${clipCount}:v=1:a=0[v]`;
+  return `${chains.join(";")};${concat}`;
+}
+
 const FIT_IMAGE_TIMEOUT_MS = 60_000;
 const FIT_VIDEO_TIMEOUT_MS = 3 * 60_000;
 const JOIN_VIDEOS_TIMEOUT_MS = 10 * 60_000;
@@ -644,24 +673,19 @@ export async function executeArgonMediaTool(
     ctx.onStatus?.(toolStatus(ctx, `join_videos (${id}, ${clips.length} clips)…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
-    const chains = sources.map((_, index) => {
-      const video = `[${index}:v]fps=${fps},scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2:color=0x000000,setsar=1,format=yuv420p[v${index}]`;
-      const audio = withAudio
-        ? `;[${index}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a${index}]`
-        : "";
-      return video + audio;
+    const filterComplex = buildJoinVideosFilter({
+      clipCount: sources.length,
+      width: outW,
+      height: outH,
+      fps,
+      withAudio,
     });
-    const vLabels = sources.map((_, index) => `[v${index}]`).join("");
-    const aLabels = sources.map((_, index) => `[a${index}]`).join("");
-    const concat = withAudio
-      ? `${vLabels}${aLabels}concat=n=${sources.length}:v=1:a=1[v][a]`
-      : `${vLabels}concat=n=${sources.length}:v=1:a=0[v]`;
     await ffmpegOut(
       absPath,
       [
         ...sources.flatMap((src) => ["-i", src]),
         "-filter_complex",
-        `${chains.join(";")};${concat}`,
+        filterComplex,
         "-map",
         "[v]",
         ...(withAudio ? ["-map", "[a]", "-c:a", "aac", "-ar", "48000", "-ac", "2"] : ["-an"]),
