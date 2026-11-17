@@ -11,7 +11,7 @@ GDP-style: two services, shared Postgres + object storage, Gemini Files URI reus
 
 Keep the legacy `Dockerfile` + `deploy/start.sh` only for single-box smoke tests.
 
-Web and worker must ship this revision together. New cooks enqueue `task_plan` / `task_execute`; the worker still claims leftover `argon_plan` / `argon_execute` rows and still reads `argon_plan.json` from the bucket. If web deploys first, new jobs sit until the worker catches up. A worker restart fails in-flight running jobs (same as today) — retry those cooks.
+Web and worker must ship this revision together. New cooks enqueue `task_plan` / `task_execute`. If web deploys first, those jobs sit until the worker catches up. A worker restart fails in-flight running jobs — retry those cooks.
 
 ## Env (both services)
 
@@ -35,7 +35,7 @@ Web and worker must ship this revision together. New cooks enqueue `task_plan` /
 
 ## Hygiene
 
-1. **5h** after last interaction on a finished cook → delete staging (`inputs`, `shot_*`, `argon_media`, …); keep `final*` + plan JSON.
+1. **5h** after last interaction on a finished cook → delete staging (`inputs`, `shot_*`, `compose_media`, …); keep `final*` + plan JSON.
 2. **24h** after last interaction → delete the whole run (download included) + DB rows.
 3. Viewing a run (GET detail) bumps `updated_at` (interaction).
 

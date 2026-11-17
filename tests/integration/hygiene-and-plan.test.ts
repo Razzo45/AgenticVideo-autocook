@@ -30,20 +30,20 @@ describe("finished-run hygiene", () => {
     fs.mkdirSync(path.join(dir, "shot_1"), { recursive: true });
     fs.writeFileSync(path.join(dir, "out", "Deck.pptx"), "deck");
     fs.writeFileSync(path.join(dir, "inputs", "logo.png"), "logo");
-    fs.writeFileSync(path.join(dir, "argon_composition.json"), "{}");
-    fs.writeFileSync(path.join(dir, "argon_plan.json"), "{}");
+    fs.writeFileSync(path.join(dir, "task_composition.json"), "{}");
+    fs.writeFileSync(path.join(dir, "task_plan.json"), "{}");
     fs.writeFileSync(path.join(dir, "compose_media", "slot.png"), "x");
 
     const removed = purgeRunStaging(runId, { keepInputs: true }).removed.sort();
     assert.deepEqual(removed, ["compose_media", "shot_1"]);
     assert.equal(fs.existsSync(path.join(dir, "inputs", "logo.png")), true);
-    assert.equal(fs.existsSync(path.join(dir, "argon_composition.json")), true);
+    assert.equal(fs.existsSync(path.join(dir, "task_composition.json")), true);
     assert.equal(fs.existsSync(path.join(dir, "out", "Deck.pptx")), true);
 
     purgeRunStaging(runId);
     assert.equal(fs.existsSync(path.join(dir, "inputs")), false);
     assert.equal(fs.existsSync(path.join(dir, "out", "Deck.pptx")), true);
-    assert.equal(fs.existsSync(path.join(dir, "argon_plan.json")), true);
+    assert.equal(fs.existsSync(path.join(dir, "task_plan.json")), true);
   });
 });
 
@@ -84,7 +84,7 @@ describe("execute weight from the saved plan", () => {
     const dir = path.join(root, runId);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
-      path.join(dir, "argon_plan.json"),
+      path.join(dir, "task_plan.json"),
       JSON.stringify({
         deliverables: [
           { deliverable: "pptx", filename: "Deck.pptx" },
@@ -93,7 +93,6 @@ describe("execute weight from the saved plan", () => {
       }),
     );
     assert.equal(scheduleForJob(runId, "task", "task_execute").weight, 35);
-    assert.equal(scheduleForJob(runId, "task", "argon_execute").weight, 35);
     assert.equal(scheduleForJob(runId, "task", "task_plan").weight, 1);
     assert.equal(scheduleForJob("missing", "task", "task_execute").weight, 10);
   });
