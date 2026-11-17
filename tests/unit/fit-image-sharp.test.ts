@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import sharp from "sharp";
-import { executeArgonMediaTool, type MediaToolContext } from "../../src/autocook/argonMediaTools";
+import { executeMediaTool, type MediaToolContext } from "../../src/autocook/mediaTools";
 
 async function makeStill(root: string, name: string, width: number, height: number): Promise<string> {
   const source = path.join(root, name);
@@ -33,7 +33,7 @@ describe("fit_image sharp path", () => {
     const source = await makeStill(root, "cover.png", 640, 360);
     const ctx = mediaCtx(root, new Map([["cover.png", source]]));
 
-    const result = await executeArgonMediaTool(
+    const result = await executeMediaTool(
       "fit_image",
       {
         id: "cover-fit",
@@ -59,7 +59,7 @@ describe("fit_image sharp path", () => {
     const source = await makeStill(root, "logo.png", 200, 100);
     const ctx = mediaCtx(root, new Map([["logo.png", source]]));
 
-    await executeArgonMediaTool(
+    await executeMediaTool(
       "fit_image",
       {
         id: "logo-fit",
@@ -90,7 +90,7 @@ describe("fit_image sharp path", () => {
     const source = await makeStill(root, "wide.png", 400, 100);
     const ctx = mediaCtx(root, new Map([["wide.png", source]]));
 
-    const result = await executeArgonMediaTool(
+    const result = await executeMediaTool(
       "fit_image",
       {
         id: "wide-fit",
@@ -115,7 +115,7 @@ describe("fit_image sharp path", () => {
 
     await assert.rejects(
       () =>
-        executeArgonMediaTool(
+        executeMediaTool(
           "fit_image",
           {
             id: "empty-fit",

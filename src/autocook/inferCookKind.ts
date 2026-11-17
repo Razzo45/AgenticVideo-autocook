@@ -1,7 +1,7 @@
 import type { CookKind } from "../pipeline/schemaDocs";
 
 /**
- * Infer deliverable kind from brief + attachment names (Argon may override after classify).
+ * Infer deliverable kind from brief + attachment names (the brain may override after classify).
  */
 export function inferCookKind(prompt: string, files: string[] = []): CookKind {
   const p = prompt.toLowerCase();

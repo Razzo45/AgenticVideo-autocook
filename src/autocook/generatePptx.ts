@@ -1,5 +1,5 @@
 /**
- * PPTX cook — Argon owns slide IR; platform builds minimal OOXML via JSZip.
+ * PPTX cook — the brain owns slide IR; platform builds minimal OOXML via JSZip.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -266,7 +266,7 @@ ${presRels}
       const abs = path.join(mediaDir, fileName);
       const prebuilt = el.image_file?.trim();
       if (prebuilt && fs.existsSync(prebuilt)) {
-        opts.onStatus?.(`Embedding Argon-tool image ${path.basename(prebuilt)}…`);
+        opts.onStatus?.(`Embedding generated image ${path.basename(prebuilt)}…`);
         fs.copyFileSync(prebuilt, abs);
       } else {
         const prompt = el.image_prompt?.trim() || el.text?.trim() || "Abstract brand visual";

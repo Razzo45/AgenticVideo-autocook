@@ -58,7 +58,7 @@ export function isDocPipelineMode(mode: string | null | undefined): mode is DocP
 export const MIN_DURATION_AUDIO_SEC = 15;
 /** Podcast episode masters may run up to ~16 minutes (incl. silence pads). */
 export const MAX_DURATION_AUDIO_SEC = 960;
-/** Autocook brain — Gemini 4 Argon via GEMINI_API_KEY only (storyboard / extract / EDL). */
+/** Default brain — Gemini 4 Argon via GEMINI_API_KEY (storyboard / extract / EDL). Task cooks may use Carbon. */
 export const BRAIN_MODEL = "gemini-4-argon";
 /** Product video — Omni on GEMINI_API_KEY (no Seedream / OpenRouter). */
 export const PRODUCT_VIDEO_MODEL = "google/gemini-omni-1.1-flash";
@@ -66,7 +66,7 @@ export const PRODUCT_VIDEO_MODEL = "google/gemini-omni-1.1-flash";
 export const AUDIO_TTS_MODEL = "gemini-3.8-flash-tts";
 export const AUDIO_MUSIC_MODEL = "lyria-3.5";
 export const AUDIO_MUSIC_CLIP_MODEL = "lyria-3-clip-preview";
-/** Audio plan / podcast EDL refine — same Argon brain as video storyboard. */
+/** Audio plan / podcast EDL refine — same default brain as video storyboard. */
 export const AUDIO_EXTRACT_MODEL = BRAIN_MODEL;
 
 /** Omni API only accepts 16:9 and 9:16 — map delivery aspect to nearest canvas. */

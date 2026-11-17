@@ -1,5 +1,5 @@
 /**
- * Full autocook: preflight → Argon plan → generate → assemble/export.
+ * Full autocook: preflight → brain plan → generate → assemble/export.
  * Modes: video | audio | html | image | pptx | pdf
  */
 import fs from "node:fs";
@@ -45,7 +45,7 @@ export async function runAutocook(input: RunAutocookInput): Promise<RunAutocookR
     fs.writeFileSync(path.join(input.workDir, "preflight.json"), JSON.stringify(pre, null, 2));
   }
 
-  input.onStatus?.(`Planning (${mode}) with Argon…`);
+  input.onStatus?.(`Planning (${mode})…`);
   const planned = await planCook({
     prompt: brief,
     mode,

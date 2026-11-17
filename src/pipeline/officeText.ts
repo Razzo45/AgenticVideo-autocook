@@ -1,6 +1,6 @@
 /**
  * Pull the readable contents out of a Word, PowerPoint, or Excel file.
- * Argon does not accept those packages as documents. The text and embedded
+ * The brain does not accept those packages as documents. The text and embedded
  * pictures are what it can actually read.
  */
 import JSZip from "jszip";

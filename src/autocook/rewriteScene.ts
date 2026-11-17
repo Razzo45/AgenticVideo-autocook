@@ -1,5 +1,5 @@
 /**
- * Silent Argon rewrite of a filtered scene — no HITL / plate UI.
+ * Silent brain rewrite of a filtered scene — no HITL / plate UI.
  */
 import { brainCompletion } from "../pipeline/geminiBrain";
 import { BRAIN_MODEL } from "../pipeline/constants";

@@ -1,5 +1,5 @@
 /**
- * Argon splits one operator task into one cook per deliverable.
+ * The brain splits one operator task into one cook per deliverable.
  * The platform then enqueues each kind separately.
  */
 import { z } from "zod";
@@ -35,7 +35,7 @@ function parseJsonObject(text: string): unknown {
   return JSON.parse(text.slice(start, end + 1));
 }
 
-/** Expand Argon's `{ cooks: [{ kind, count, label, brief }] }` into one entry per file. */
+/** Expand the brain's `{ cooks: [{ kind, count, label, brief }] }` into one entry per file. */
 export function normalizeCookSplit(raw: unknown, fallbackPrompt: string): SplitCook[] {
   const body = raw && typeof raw === "object" ? (raw as { cooks?: unknown }) : {};
   const list = Array.isArray(body.cooks) ? body.cooks : Array.isArray(raw) ? raw : [];

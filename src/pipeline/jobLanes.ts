@@ -4,13 +4,14 @@
  *
  * Lane map kept from the GDP port:
  *  - fast (0): image
- *  - default (1): html, pdf, video stages, argon task
+ *  - default (1): html, pdf, video stages, task execute
  *  - generate (2): pptx
  *  - helper (3): audio
  *  - archive (4): reserved
  */
 
 import { isDocPipelineMode } from "./constants";
+import { isTaskExecuteJob, isTaskPlanJob } from "./taskJobs";
 
 /**
  * GDP uses 2 for text grading. Autocook Omni/image gens are far heavier —
@@ -67,10 +68,10 @@ export function classifyCookJob(
   if (pipelineMode === "html" || pipelineMode === "pdf" || isDocPipelineMode(pipelineMode ?? "")) {
     return { lane: LANE_DEFAULT, heavy: false, archive: false };
   }
-  if (jobType === "argon_plan") {
+  if (isTaskPlanJob(jobType)) {
     return { lane: LANE_FAST, heavy: false, archive: false };
   }
-  if (pipelineMode === "task" || jobType === "argon_task" || jobType === "argon_execute") {
+  if (pipelineMode === "task" || isTaskExecuteJob(jobType)) {
     return { lane: LANE_DEFAULT, heavy: true, archive: false };
   }
   if (isVideoMode(pipelineMode) || ["script", "keyframes", "clips", "stitch", "export"].includes(jobType)) {

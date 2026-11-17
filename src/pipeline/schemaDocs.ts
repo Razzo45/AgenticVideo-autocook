@@ -1,5 +1,5 @@
 /**
- * Argon-owned plans for non-AV deliverables (html / image / pptx / pdf).
+ * Brain-owned plans for non-AV deliverables (html / image / pptx / pdf).
  * Platform only writes bytes and runs export steps the plan marks.
  */
 import { z } from "zod";
@@ -10,12 +10,12 @@ export type CookKind = z.infer<typeof cookKindSchema>;
 export const htmlFileSchema = z.object({
   /** Relative path inside the deliverable bundle, e.g. index.html or js/app.js */
   path: z.string().min(1),
-  /** Full file contents — Argon owns this; platform writes verbatim. */
+  /** Full file contents — the brain owns this; platform writes verbatim. */
   content: z.string(),
 });
 
 /**
- * Media Argon asked the platform to generate (same role as gemini.google.com tools).
+ * Media the brain asked the platform to generate (same role as gemini.google.com tools).
  * Reference in HTML as {{asset:ID}} or the relative filename; embed chooses path vs data URI.
  */
 export const htmlMediaAssetSchema = z.object({
@@ -49,7 +49,7 @@ export const htmlPlanSchema = z.object({
   /** Entry HTML relative path (usually index.html). */
   entry: z.string().min(1).default("index.html"),
   files: z.array(htmlFileSchema).min(1),
-  /** Media to generate/inline before packaging (Argon-owned tool asks). */
+  /** Media to generate/inline before packaging (brain-owned tool asks). */
   assets: z.array(htmlMediaAssetSchema).optional().default([]),
   /** Optional: ask platform to screenshot entry after write (QA only). */
   screenshot: z.boolean().optional().default(false),
@@ -61,7 +61,7 @@ export type HtmlPlan = z.infer<typeof htmlPlanSchema>;
 
 export const imageAssetSchema = z.object({
   id: z.string().min(1),
-  /** png = media model; svg = Argon markup in `svg` field. */
+  /** png = media model; svg = brain markup in `svg` field. */
   format: z.enum(["png", "svg"]),
   width: z.number().int().positive(),
   height: z.number().int().positive(),
@@ -88,9 +88,9 @@ export const pptxElementSchema = z.object({
   y: z.number().min(0).max(100).optional().default(5),
   w: z.number().min(1).max(100).optional().default(90),
   h: z.number().min(1).max(100).optional().default(20),
-  /** For image_slot: Argon image prompt (generated then embedded). */
+  /** For image_slot: brain image prompt (generated then embedded). */
   image_prompt: z.string().optional(),
-  /** Optional path to media already produced by Argon tools (relative to workDir/argon_media or absolute). */
+  /** Optional path to media already produced by brain tools (relative to workDir/compose_media or absolute). */
   image_file: z.string().optional(),
   fill: z.string().optional(),
 });
@@ -117,7 +117,7 @@ export type PptxPlan = z.infer<typeof pptxPlanSchema>;
 export const pdfPlanSchema = z.object({
   kind: z.literal("pdf"),
   media_desc: z.string().min(1),
-  /** Argon chooses the source cook that produces PDF. */
+  /** The brain chooses the source cook that produces PDF. */
   source: z.enum(["html", "pptx"]),
   /** Nested plan for the source (html or pptx). */
   source_plan: z.union([htmlPlanSchema, pptxPlanSchema]),

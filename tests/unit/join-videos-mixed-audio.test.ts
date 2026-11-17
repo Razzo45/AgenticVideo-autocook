@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, it } from "node:test";
-import { executeArgonMediaTool, type MediaToolContext } from "../../src/autocook/argonMediaTools";
+import { executeMediaTool, type MediaToolContext } from "../../src/autocook/mediaTools";
 
 const execFileAsync = promisify(execFile);
 
@@ -93,7 +93,7 @@ describe("join_videos mixed audio", () => {
 
     await assert.rejects(
       () =>
-        executeArgonMediaTool(
+        executeMediaTool(
           "join_videos",
           {
             id: "joined",
@@ -128,7 +128,7 @@ describe("join_videos mixed audio", () => {
       namedReferencesOnly: true,
     };
 
-    const result = await executeArgonMediaTool(
+    const result = await executeMediaTool(
       "join_videos",
       {
         id: "joined-mute",

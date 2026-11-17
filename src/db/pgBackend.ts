@@ -8,6 +8,7 @@ import {
   LANE_DEFAULT,
 } from "../pipeline/jobLanes";
 import { scheduleForJob } from "../pipeline/taskWeight";
+import { TASK_EXECUTE_JOB_SQL, TASK_PLAN_JOB_SQL } from "../pipeline/taskJobs";
 import { clipStatusLine, type QueueSnapshot, type QueueTask } from "../pipeline/queueStatus";
 import type { AssetRow, JobRow, ReviewRow, RunRow, VariantRow } from "./types";
 
@@ -125,13 +126,17 @@ export async function pgListRuns(userId?: string): Promise<RunRow[]> {
   return rows.map(mapRun);
 }
 
-export async function pgUpdateRun(id: string, patch: Partial<RunRow>): Promise<void> {
+export async function pgUpdateRun(
+  id: string,
+  patch: Partial<RunRow>,
+  opts?: { resume?: boolean },
+): Promise<void> {
   const current = await pgGetRun(id);
   if (!current) throw new Error(`Unknown run ${id}`);
   // Terminal FSM: failed/exported/rejected cannot be resurrected into active cook states.
   let safePatch: Partial<RunRow> = patch;
   const terminal = current.status === "failed" || current.status === "exported" || current.status === "rejected";
-  if (terminal) {
+  if (terminal && !opts?.resume) {
     safePatch = { ...patch };
     if (
       patch.status === "generating" ||
@@ -275,22 +280,22 @@ export async function pgClaimNextJob(): Promise<JobRow | undefined> {
            SELECT 1 FROM app.jobs r WHERE r.run_id = j.run_id AND r.status = 'running'
          )
          AND (
-           j.type = 'argon_plan'
+           j.type IN (${TASK_PLAN_JOB_SQL})
            OR NOT EXISTS (
              SELECT 1 FROM app.jobs busy
-             WHERE busy.status = 'running' AND busy.type <> 'argon_plan'
+             WHERE busy.status = 'running' AND busy.type NOT IN (${TASK_PLAN_JOB_SQL})
            )
          )
        ORDER BY
          CASE
-           WHEN j.type <> 'argon_plan' AND EXISTS (
+           WHEN j.type NOT IN (${TASK_PLAN_JOB_SQL}) AND EXISTS (
              SELECT 1 FROM app.jobs prev
-             WHERE prev.run_id = j.run_id AND prev.status = 'done' AND prev.type <> 'argon_plan'
+             WHERE prev.run_id = j.run_id AND prev.status = 'done' AND prev.type NOT IN (${TASK_PLAN_JOB_SQL})
            ) THEN 0
-           WHEN j.type <> 'argon_plan' THEN 1
+           WHEN j.type NOT IN (${TASK_PLAN_JOB_SQL}) THEN 1
            ELSE 2
          END,
-         CASE WHEN j.type = 'argon_plan' THEN 0 ELSE COALESCE(j.task_weight, 10) END ASC,
+         CASE WHEN j.type IN (${TASK_PLAN_JOB_SQL}) THEN 0 ELSE COALESCE(j.task_weight, 10) END ASC,
          j.created_at ASC
        LIMIT 1
        FOR UPDATE SKIP LOCKED`,
@@ -380,17 +385,17 @@ export async function pgErrorBusyJobsForRun(runId: string, error: string): Promi
   return rows.length;
 }
 
-export async function pgReleaseStuckArgonPlanJobs(): Promise<number> {
+export async function pgReleaseStuckTaskPlanJobs(): Promise<number> {
   const rows = await pgQuery<{ id: string }>(
     `SELECT plan.id AS id FROM app.jobs plan
      INNER JOIN app.runs r ON r.id = plan.run_id
-     WHERE plan.type = 'argon_plan'
+     WHERE plan.type IN (${TASK_PLAN_JOB_SQL})
        AND plan.status = 'running'
        AND r.status = 'queued'
        AND EXISTS (
          SELECT 1 FROM app.jobs ex
          WHERE ex.run_id = plan.run_id
-           AND ex.type IN ('argon_execute', 'argon_task')
+           AND ex.type IN (${TASK_EXECUTE_JOB_SQL})
            AND ex.status = 'pending'
        )`,
   );

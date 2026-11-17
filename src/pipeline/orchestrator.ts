@@ -139,7 +139,8 @@ import {
   parseAudioPlan,
 } from "./audioPipeline";
 import { isDocRun, jobDocCook, resolveDocFinalPath } from "./docPipeline";
-import { jobArgonPlan, jobArgonTask, loadTaskDeliverables } from "./argonTask";
+import { jobTaskPlan, jobTaskExecute, loadTaskDeliverables } from "./taskPipeline";
+import { TASK_EXECUTE_JOB, TASK_PLAN_JOB, isTaskExecuteJob, isTaskPlanJob } from "./taskJobs";
 import { withGeminiOwner } from "./geminiAdmission";
 import {
   appendMetaJsonl,
@@ -333,7 +334,7 @@ export async function createRun(input: {
   autoOptions?: Partial<AutoOptions> | AutoOptions;
   /** GDP-style idempotency key — retries return the same run instead of double-billing. */
   requestId?: string;
-  /** Task tag. Empty stays Argon. Ignored outside pipeline mode task. */
+  /** Task tag. Empty stays the default brain (Argon). Ignored outside pipeline mode task. */
   brain?: "argon" | "carbon";
   userId?: string;
   tenantId?: string | null;
@@ -352,7 +353,7 @@ export async function createRun(input: {
   let outputResolution = normalizeOutputResolution(input.outputResolution);
   if (autoOpts?.deliver4k) outputResolution = "4K";
   // Heuristic auto uses durationBounds (e.g. ~30s min for multi-scene cooks).
-  // Task cooks use the mother-platform tag. Other pipelines stay on Argon.
+  // Task cooks use the mother-platform tag. Other pipelines stay on the default brain.
   const scriptModel = mode === "task" ? modelForBrain(input.brain ?? "argon") : BRAIN_MODEL;
   const bounds = durationBounds(mode);
   let duration = Math.min(bounds.max, Math.max(bounds.min, input.duration));
@@ -418,7 +419,7 @@ export async function createRun(input: {
     created_by_kind: createdByKind,
   });
   if (mode === "task") {
-    await enqueueJob(id, "argon_plan");
+    await enqueueJob(id, TASK_PLAN_JOB);
     await updateRun(id, { status: "queued", error: `${brainLabel(scriptModel)} is reading the task…` });
   } else if (isDocPipelineMode(mode)) {
     await enqueueJob(id, "doc_cook");
@@ -514,7 +515,7 @@ function plateInPointSec(run: RunRow): number {
   return Number.isFinite(v) && v > 0 && v < 600 ? v : 0;
 }
 
-/** Heuristic slot grid — used only by direct segmentation, not Argon auto. */
+/** Heuristic slot grid — used only by direct segmentation, not auto. */
 function planShotDurations(allowed: number[], minimumSec: number): number[] {
   const maxLen = allowed.length ? Math.max(...allowed) : 8;
   const count = Math.max(1, Math.ceil(Math.max(minimumSec, 1) / maxLen));
@@ -538,7 +539,7 @@ function snapShotDuration(want: number, allowed: number[]): number {
   return best;
 }
 
-/** Stitch fps from Argon's plan when present; else parse the operator brief. */
+/** Stitch fps from the brain's plan when present; else parse the operator brief. */
 function planDeliveryFps(run: RunRow, script: ScriptPlan | null): string {
   const fps = script?.delivery_fps;
   if (typeof fps === "number" && Number.isFinite(fps) && fps > 0) {
@@ -570,8 +571,8 @@ export async function processJob(job: JobRow): Promise<void> {
   try {
     // GDP-style owner fairness: all Gemini calls in this job share run id.
     await withGeminiOwner(run.id, async () => {
-      if (job.type === "argon_plan") await jobArgonPlan(run);
-      else if (job.type === "argon_task" || job.type === "argon_execute") await jobArgonTask(run);
+      if (isTaskPlanJob(job.type)) await jobTaskPlan(run);
+      else if (isTaskExecuteJob(job.type)) await jobTaskExecute(run);
       else if (job.type === "doc_cook") await jobDocCook(run);
       else if (job.type === "audio_plan") await jobAudioPlan(run);
       else if (job.type === "audio_speech") await jobAudioSpeech(run);
@@ -752,7 +753,7 @@ ${autoTransitionHint}${footageRule}${musicRule}${logoRule}${calloutRule}
       .trim();
   };
   const normalize = (parsed: ScriptPlan): ScriptPlan => {
-    // Argon owns shot count — we only snap each duration onto the generator's allowed set.
+    // The brain owns shot count — we only snap each duration onto the generator's allowed set.
     parsed.shots = parsed.shots.map((s, i) => ({
       ...s,
       image_prompt: dropCallout(dropLogoBug(s.image_prompt), s.callout),
@@ -1384,7 +1385,7 @@ async function jobClips(run: RunRow, shotIndex: number): Promise<void> {
           firstFramePath: firstFrame,
           outPath: out,
           outputResolution: recoveryRes,
-          // Auto Veo: no stills. Auto Omni: attach operator plates Argon planned against (no extra creative prompt).
+          // Auto Veo: no stills. Auto Omni: attach operator plates the brain planned against (no extra creative prompt).
           referenceImagePaths: auto
             ? isOmniModel(run.video_model)
               ? parseRunInputs(run.input_assets_json)
@@ -1404,7 +1405,7 @@ async function jobClips(run: RunRow, shotIndex: number): Promise<void> {
           referenceVideoStartSec: plateInPointSec(run) + shotStartSec(script, shotIndex),
           referenceAudioPaths: auto ? undefined : visual.audioPaths.length ? visual.audioPaths : undefined,
           persistOnCapacity: auto,
-          // Argon owns the take wording — do not platform-soften Omni prompts.
+          // The brain owns the take wording — do not platform-soften Omni prompts.
           maxFilterAttempts: auto && !isOmniModel(run.video_model) ? 2 : 1,
           educationalSoften: auto && !isOmniModel(run.video_model) && !run.category.startsWith("Short Drama"),
           brainOwnedPrompt: auto && isOmniModel(run.video_model),
@@ -1751,7 +1752,7 @@ async function jobStitch(run: RunRow): Promise<void> {
       clips.push(composed);
     } else {
       if (insert) console.warn(`[stitch] scene ${i + 1} insert source not attached: ${insert.source}`);
-      // Argon owns shot duration — do not shorten graphic cards in post.
+      // The brain owns shot duration — do not shorten graphic cards in post.
       clips.push(v.path);
     }
   }
@@ -2476,50 +2477,66 @@ export async function retryRun(runId: string): Promise<void> {
     .run("Superseded by scene resume", ts, run.id);
 
   if (run.pipeline_mode === "task") {
-    await updateRun(run.id, {
-      status: "queued",
-      error: "Resuming the deliverables…",
-      gate: null,
-      script_json: null,
-      current_shot_index: 0,
-    });
-    await enqueueJob(run.id, "argon_execute");
+    await updateRun(
+      run.id,
+      {
+        status: "queued",
+        error: "Resuming the deliverables…",
+        gate: null,
+        script_json: null,
+        current_shot_index: 0,
+      },
+      { resume: true },
+    );
+    await enqueueJob(run.id, TASK_EXECUTE_JOB);
     return;
   }
 
   if (isDocRun(run)) {
-    await updateRun(run.id, {
-      status: "generating",
-      error: `Resuming document cook (${run.pipeline_mode})…`,
-      gate: null,
-      current_shot_index: 0,
-    });
+    await updateRun(
+      run.id,
+      {
+        status: "generating",
+        error: `Resuming document cook (${run.pipeline_mode})…`,
+        gate: null,
+        current_shot_index: 0,
+      },
+      { resume: true },
+    );
     await enqueueJob(run.id, "doc_cook");
     return;
   }
 
   if (isAudioRun(run)) {
     if (!run.script_json) {
-      await updateRun(run.id, {
-        status: "generating",
-        error: "Resuming — planning audio cues…",
-        gate: null,
-        current_shot_index: 0,
-      });
+      await updateRun(
+        run.id,
+        {
+          status: "generating",
+          error: "Resuming — planning audio cues…",
+          gate: null,
+          current_shot_index: 0,
+        },
+        { resume: true },
+      );
       await enqueueJob(run.id, "audio_plan");
       return;
     }
     const plan = parseAudioPlan(run);
-    await updateRun(run.id, { status: "generating", gate: null, error: "Resuming audio cook…" });
+    await updateRun(run.id, { status: "generating", gate: null, error: "Resuming audio cook…" }, { resume: true });
     // Plate / tour assembly: keep EDL when present; otherwise re-plan (still assembly path).
     if (plan.assembly || plan.tour_assembly) {
       if (plan.assembly_edl_json || plan.tour_assembly) {
-        await updateRun(run.id, {
-          status: plan.tour_assembly || plan.assembly ? "stitching" : "generating",
-          error: plan.tour_assembly
-            ? "Resuming tour assembly…"
-            : "Resuming podcast assembly from EDL…",
-        });
+        await updateRun(
+          run.id,
+          {
+            status: plan.tour_assembly || plan.assembly ? "stitching" : "generating",
+            error: plan.tour_assembly
+              ? "Resuming tour assembly…"
+              : "Resuming podcast assembly from EDL…",
+          },
+          { resume: true },
+        );
         await enqueueJob(run.id, "audio_assemble");
         return;
       }
@@ -2560,12 +2577,16 @@ export async function retryRun(runId: string): Promise<void> {
 
   if (!run.script_json) {
     if (run.status !== "failed") throw new Error("Only failed runs can retry without a storyboard");
-    await updateRun(run.id, {
-      status: "generating",
-      error: "Resuming — writing storyboard…",
-      gate: null,
-      current_shot_index: 0,
-    });
+    await updateRun(
+      run.id,
+      {
+        status: "generating",
+        error: "Resuming — writing storyboard…",
+        gate: null,
+        current_shot_index: 0,
+      },
+      { resume: true },
+    );
     await enqueueJob(run.id, "script");
     return;
   }
@@ -2579,12 +2600,16 @@ export async function retryRun(runId: string): Promise<void> {
   }
 
   if (shot >= total) {
-    await updateRun(run.id, {
-      status: "stitching",
-      error: `All ${total} scenes kept — stitching…`,
-      gate: null,
-      current_shot_index: Math.max(0, total - 1),
-    });
+    await updateRun(
+      run.id,
+      {
+        status: "stitching",
+        error: `All ${total} scenes kept — stitching…`,
+        gate: null,
+        current_shot_index: Math.max(0, total - 1),
+      },
+      { resume: true },
+    );
     await enqueueJob(run.id, "stitch");
     return;
   }
@@ -2602,24 +2627,32 @@ export async function retryRun(runId: string): Promise<void> {
 
   const kf = (await listVariants(run.id, shot, "keyframe")).find((v) => v.selected);
   if (!kf) {
-    await updateRun(run.id, {
-      status: "generating",
-      error: `Resume scene ${shot + 1}/${total} — keyframe…`,
-      gate: null,
-      current_shot_index: shot,
-    });
+    await updateRun(
+      run.id,
+      {
+        status: "generating",
+        error: `Resume scene ${shot + 1}/${total} — keyframe…`,
+        gate: null,
+        current_shot_index: shot,
+      },
+      { resume: true },
+    );
     await enqueueJob(run.id, "keyframes", { shotIndex: shot });
     return;
   }
 
-  await updateRun(run.id, {
-    status: "generating",
-    error: fillMoreClips
-      ? `Resume scene ${shot + 1}/${total} — more clip takes…`
-      : `Resume scene ${shot + 1}/${total} — clip (earlier scenes kept)…`,
-    gate: null,
-    current_shot_index: shot,
-  });
+  await updateRun(
+    run.id,
+    {
+      status: "generating",
+      error: fillMoreClips
+        ? `Resume scene ${shot + 1}/${total} — more clip takes…`
+        : `Resume scene ${shot + 1}/${total} — clip (earlier scenes kept)…`,
+      gate: null,
+      current_shot_index: shot,
+    },
+    { resume: true },
+  );
   await enqueueJob(run.id, "clips", { shotIndex: shot });
 }
 
@@ -2629,7 +2662,7 @@ export async function patchRunModels(
 ): Promise<RunRow> {
   const run = await getRun(runId);
   if (!run) throw new Error("Unknown run");
-  // Product autocook: models are code-locked (Argon + Omni). No UI / API overrides.
+  // Product autocook: models are code-locked (brain + Omni). No UI / API overrides.
   throw new Error(
     "Session models are baked into Autocook and cannot be changed from the UI. Edit BRAIN_MODEL / PRODUCT_VIDEO_MODEL in code.",
   );

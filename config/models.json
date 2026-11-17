@@ -14,5 +14,5 @@
     "1:1": "google/gemini-omni-1.1-flash",
     "2.35:1": "google/gemini-omni-1.1-flash"
   },
-  "comment": "One deliverable task runs at a time, ordered by Argon's plan weight. A second slot can read the next task (text plan) while that generation runs."
+  "comment": "One deliverable task runs at a time, ordered by the plan weight. A second slot can read the next task (text plan) while that generation runs."
 }

@@ -1,5 +1,5 @@
 /**
- * Smoke: Argon preflight + createRun Omni defaults (cancels jobs — no burn).
+ * Smoke: brain preflight + createRun Omni defaults (cancels jobs — no burn).
  * Usage: npx tsx scripts/smoke-preflight.ts
  */
 import { preflightCook } from "../src/autocook/preflightCook";

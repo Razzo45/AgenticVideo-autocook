@@ -1,5 +1,5 @@
 /**
- * One Argon reply is the deliverable. The platform builds the file and generates
+ * One brain reply is the deliverable. The platform builds the file and generates
  * only the pictures, clips, and audio that reply names.
  */
 import { execFile } from "node:child_process";
@@ -9,9 +9,10 @@ import path from "node:path";
 import { promisify } from "node:util";
 import JSZip from "jszip";
 import { z } from "zod";
-import { executeArgonMediaTool, type MediaToolContext } from "../autocook/argonMediaTools";
+import { executeMediaTool, type MediaToolContext } from "../autocook/mediaTools";
 import { exportPdf } from "../autocook/exportPdf";
 import { withGeminiOwner } from "./geminiAdmission";
+import type { BrainLabel } from "./brainChoice";
 import { generateLyriaMusic, generateSpeechTts } from "./geminiAudio";
 
 const execFileAsync = promisify(execFile);
@@ -152,12 +153,17 @@ const KIND_ALIASES: Record<string, CompositionDeliverable["kind"]> = {
 export function composeInstructions(
   planned: unknown[],
   attachedNames: string[],
-  brain: "Argon" | "Carbon" = "Argon",
+  brain: BrainLabel = "Argon",
 ): string {
   const plan = planned.length ? JSON.stringify(planned) : "(none — the operator message names the files)";
   const attached = attachedNames.length ? attachedNames.join(", ") : "(none)";
+  const onlyThis =
+    planned.length === 1
+      ? `\nThis turn is only the planned file above. Reply with one deliverable for that file. Do not add other files.\n`
+      : "";
   return `You are ${brain}. The operator message and the attached files are the whole job.
 Reply with one JSON object and nothing else. This reply is the deliverable. Write the copy, the notes, the layout, the HTML, and the SVG here.
+${onlyThis}
 
 {"deliverables":[{"id":"string","filename":"string","kind":"pptx"|"pdf"|"html"|"svg"|"image"|"video"|"audio"}]}
 
@@ -177,7 +183,6 @@ In that HTML, list "assets" and write {{asset:id}} where one should appear.
 HTML prints in the browser. "from" a pptx prints only where LibreOffice is installed.
 
 kind "html" — "entry" and "files":[{"path":"index.html","content":"the file"}] plus "assets" as above. {{asset:id}} in the file contents. File contents are written as you wrote them, apart from those tokens.
-Optional tool write_html: when the page is large, call write_html once with the full document, then in this JSON use the same id and filename and omit files content (or leave files empty / omit files). Small pages may still be inlined here.
 
 kind "svg" — "svg" is the full document.
 Optional tool write_svg: when a mark is large (outlined logos, many paths), call write_svg once per file with the full markup, then in this JSON use the same id and filename and omit "svg" (or leave it empty). Small SVGs may still be inlined here. Tools are optional — ordinary tasks can reply with JSON only and never call them. When several large SVGs are planned, prefer one write_svg per turn (not all marks in one reply), then thin JSON.
@@ -292,7 +297,7 @@ export async function buildComposition(opts: {
   workDir: string;
   filesByName: Map<string, string>;
   ownerId: string;
-  brainLabel?: "Argon" | "Carbon";
+  brainLabel?: BrainLabel;
   onStatus?: (msg: string) => void;
 }): Promise<BuiltFile[]> {
   const stagingDir = path.join(opts.workDir, "compose_media");
@@ -694,7 +699,7 @@ async function maybeFitImage(abs: string, source: MediaSource, id: string, ctx: 
   const fittedId = `${id}-fit`;
   const base = path.basename(abs).toLowerCase();
   ctx.filesByName?.set(base, abs);
-  await executeArgonMediaTool(
+  await executeMediaTool(
     "fit_image",
     {
       id: fittedId,
@@ -717,7 +722,7 @@ async function runTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<void> {
-  await withGeminiOwner(`${ownerId}:${id}`, () => executeArgonMediaTool(name, args, ctx));
+  await withGeminiOwner(`${ownerId}:${id}`, () => executeMediaTool(name, args, ctx));
 }
 
 async function stagePlaced(
@@ -777,7 +782,7 @@ async function buildVideo(
   let currentId = ids[0]!;
   if (ids.length > 1) {
     const joined = safeId(`${item.id}-joined`);
-    await executeArgonMediaTool(
+    await executeMediaTool(
       "join_videos",
       { id: joined, clips: ids, filename: `slots/${joined}.mp4`, audio },
       ctx,
@@ -787,7 +792,7 @@ async function buildVideo(
   // Fit when size/duration is set, or when mute must strip audio before deliver.
   if (item.width || item.height || item.duration_sec || audio === "mute") {
     const fitted = safeId(`${item.id}-fitted`);
-    await executeArgonMediaTool(
+    await executeMediaTool(
       "fit_video",
       {
         id: fitted,

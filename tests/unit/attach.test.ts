@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import JSZip from "jszip";
-import { classifyAttachment } from "../../src/pipeline/attachForArgon";
+import { classifyAttachment } from "../../src/pipeline/attachForBrain";
 
 describe("attachment placement", () => {
   it("remembers a file inside a zip by its archive path", async () => {

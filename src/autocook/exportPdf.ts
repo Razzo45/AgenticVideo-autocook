@@ -92,7 +92,7 @@ export type ExportPdfResult = {
 };
 
 /**
- * Export PDF from an existing HTML entry or PPTX path as Argon requested.
+ * Export PDF from an existing HTML entry or PPTX path as the brain requested.
  */
 export async function exportPdf(opts: {
   sourcePath: string;

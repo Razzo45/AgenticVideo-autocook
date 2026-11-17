@@ -288,7 +288,7 @@ async function generateOmniVideoAdmitted(opts: Parameters<typeof generateOmniVid
       input.push(await imagePart(ai, img, opts.onStatus, (n) => uploadedFileNames.push(n)));
     }
 
-    // Argon-owned takes: the brain wrote the full instruction — do not prepend platform creative wrappers.
+    // Brain-owned takes: the brain wrote the full instruction — do not prepend platform creative wrappers.
     // Transport-only: API response_format already carries duration / aspect / resolution.
     let textPayload: string;
     if (opts.brainOwnedPrompt) {

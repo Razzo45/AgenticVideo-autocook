@@ -12,8 +12,8 @@ import {
 
 describe("job lanes", () => {
   it("keeps a task plan light and a task execute heavy", () => {
-    const plan = classifyCookJob("task", "argon_plan");
-    const execute = classifyCookJob("task", "argon_execute");
+    const plan = classifyCookJob("task", "task_plan");
+    const execute = classifyCookJob("task", "task_execute");
     assert.deepEqual(plan, { lane: LANE_FAST, heavy: false, archive: false });
     assert.equal(execute.lane, LANE_DEFAULT);
     assert.equal(execute.heavy, true);
@@ -34,7 +34,7 @@ describe("job lanes", () => {
       assert.equal(job.lane, LANE_DEFAULT);
       assert.equal(job.heavy, true);
     }
-    assert.equal(cookJobWeight("task", "argon_execute"), LANE_DEFAULT);
+    assert.equal(cookJobWeight("task", "task_execute"), LANE_DEFAULT);
     assert.equal(laneLabel(LANE_GENERATE), "generate");
   });
 });

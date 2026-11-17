@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { plannedHtmlTargets, plannedSvgTargets } from "../../src/pipeline/argonTask";
+import { plannedExecuteSlices, plannedHtmlTargets, plannedSvgTargets } from "../../src/pipeline/taskPipeline";
 import { composeInstructions, parseComposition } from "../../src/pipeline/composition";
 
 describe("composition parse", () => {
-  it("tells Argon about every deliverable kind", () => {
+  it("tells the brain about every deliverable kind", () => {
     const text = composeInstructions(
       [{ deliverable: "pptx", filename: "Deck.pptx" }],
       ["brand/logo.png"],
@@ -16,7 +16,7 @@ describe("composition parse", () => {
     assert.match(text, /Deck\.pptx/);
     assert.match(text, /write_svg/);
     assert.match(text, /one write_svg per turn/);
-    assert.match(text, /write_html/);
+    assert.match(text, /This turn is only the planned file above/);
     assert.match(text, /"audio":"keep"/);
     assert.match(text, /"audio":"mute"/);
   });
@@ -48,6 +48,29 @@ describe("composition parse", () => {
         { id: "a", filename: "A.svg" },
         { id: "B", filename: "B.svg" },
       ],
+    );
+  });
+
+  it("slices execute so html and video are separate JSON calls", () => {
+    const slices = plannedExecuteSlices([
+      { deliverable: "html", filename: "hero.html" },
+      { deliverable: "video", filename: "hero.mp4" },
+    ]);
+    assert.deepEqual(
+      slices.map((slice) => slice.map((item) => item.deliverable)),
+      [["html"], ["video"]],
+    );
+  });
+
+  it("batches two or more SVGs into one execute slice", () => {
+    const slices = plannedExecuteSlices([
+      { deliverable: "svg", filename: "A.svg" },
+      { deliverable: "html", filename: "page.html" },
+      { deliverable: "svg", filename: "B.svg" },
+    ]);
+    assert.deepEqual(
+      slices.map((slice) => slice.map((item) => item.filename)),
+      [["A.svg", "B.svg"], ["page.html"]],
     );
   });
 

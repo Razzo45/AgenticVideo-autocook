@@ -23,7 +23,7 @@ export default function SettingsPage() {
       <div className="card" style={{ marginBottom: 16, maxWidth: 640 }}>
         <h3>API keys</h3>
         <p>
-          Gemini (Argon / Omni / TTS / Lyria):{" "}
+          Gemini (brain / Omni / TTS / Lyria):{" "}
           {data.gemini?.present ? (
             <span className="ok">{data.gemini.masked}</span>
           ) : (

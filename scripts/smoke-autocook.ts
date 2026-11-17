@@ -1,5 +1,5 @@
 /**
- * Smoke: Argon brain + createRun(auto/audio) on the autocook copy.
+ * Smoke: default brain + createRun(auto/audio) on the autocook copy.
  * Does not start a long cook — cancels enqueued jobs after verifying wiring.
  *
  * Usage: npx tsx scripts/smoke-autocook.ts
@@ -28,7 +28,7 @@ function loadDotEnv() {
 loadDotEnv();
 
 async function smokeBrain() {
-  console.log(`[smoke] Argon brainCompletion (${BRAIN_MODEL})…`);
+  console.log(`[smoke] brainCompletion (${BRAIN_MODEL})…`);
   const text = await brainCompletion({
     model: BRAIN_MODEL,
     json: true,
@@ -45,9 +45,9 @@ async function smokeBrain() {
   });
   const parsed = JSON.parse(text) as { ok?: boolean; model?: string; beats?: string[] };
   if (!parsed.ok || !Array.isArray(parsed.beats) || parsed.beats.length < 1) {
-    throw new Error(`unexpected Argon payload: ${text.slice(0, 400)}`);
+    throw new Error(`unexpected brain payload: ${text.slice(0, 400)}`);
   }
-  console.log("[smoke] Argon plan ok:", JSON.stringify(parsed).slice(0, 240));
+  console.log("[smoke] plan ok:", JSON.stringify(parsed).slice(0, 240));
 }
 
 function cancelRun(runId: string, reason: string) {

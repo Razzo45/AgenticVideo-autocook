@@ -1,7 +1,7 @@
 /**
- * Media tools Argon can call during document cooks — mirrors gemini.google.com
+ * Media tools the brain can call during document cooks — mirrors gemini.google.com
  * (generate image / video / SVG, then reference or inline in the deliverable).
- * Platform executes tools with Argon's prompts only — no creative wrappers.
+ * Platform executes tools with the brain's prompts only — no creative wrappers.
  */
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -18,6 +18,7 @@ import {
   withDeadline,
 } from "../pipeline/runControl";
 import type { HtmlMediaAsset } from "../pipeline/schemaDocs";
+import type { BrainLabel } from "../pipeline/brainChoice";
 import { probeFile } from "../pipeline/stitch";
 
 const execFileAsync = promisify(execFile);
@@ -27,12 +28,12 @@ const IMAGE_MODEL = process.env.PRODUCT_IMAGE_MODEL?.trim() || "gemini-2.5-flash
 function requireGeminiKey(): string {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key || key === "replace-me") {
-    throw new Error("GEMINI_API_KEY is missing for Argon media tools.");
+    throw new Error("GEMINI_API_KEY is missing for brain media tools.");
   }
   return key;
 }
 
-export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
+export const MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "generate_image",
     description:
@@ -155,7 +156,7 @@ export const ARGON_MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "write_svg",
     description:
-      "Register SVG markup Argon authored (no rasterization). Prefer for logos/icons that must stay crisp.",
+      "Register SVG markup you authored (no rasterization). Prefer for logos/icons that must stay crisp.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -268,17 +269,17 @@ export type MediaToolContext = {
   stagingDir: string;
   staged: Map<string, StagedMedia>;
   referenceImagePaths?: string[];
-  /** Basename → file path for references Argon names on a tool call. */
+  /** Basename → file path for references the brain names on a tool call. */
   filesByName?: Map<string, string>;
-  /** When true, attach only the files Argon names. Do not add the rest. */
+  /** When true, attach only the files the brain names. Do not add the rest. */
   namedReferencesOnly?: boolean;
   onStatus?: (msg: string) => void;
   /** Name used on the live status line. */
-  brainLabel?: "Argon" | "Carbon";
+  brainLabel?: BrainLabel;
 };
 
 function toolStatus(ctx: MediaToolContext, detail: string): string {
-  const who = ctx.brainLabel === "Carbon" ? "Carbon" : "Argon";
+  const who = ctx.brainLabel ?? "Brain";
   return `${who} tool ${detail}`;
 }
 
@@ -533,7 +534,7 @@ function namedRefs(args: Record<string, unknown>, ctx: MediaToolContext): string
   return out;
 }
 
-export async function executeArgonMediaTool(
+export async function executeMediaTool(
   name: string,
   args: Record<string, unknown>,
   ctx: MediaToolContext,
@@ -903,10 +904,10 @@ export async function executeArgonMediaTool(
     };
   }
 
-  throw new Error(`Unknown Argon media tool: ${name}`);
+  throw new Error(`Unknown media tool: ${name}`);
 }
 
-/** Materialize declarative plan assets (when Argon listed them without calling tools). */
+/** Materialize declarative plan assets (when the brain listed them without calling tools). */
 export async function materializePlanAssets(
   assets: HtmlMediaAsset[],
   ctx: MediaToolContext,
@@ -918,7 +919,7 @@ export async function materializePlanAssets(
       continue;
     }
     if (asset.format === "png") {
-      await executeArgonMediaTool(
+      await executeMediaTool(
         "generate_image",
         {
           id: asset.id,
@@ -931,13 +932,13 @@ export async function materializePlanAssets(
         ctx,
       );
     } else if (asset.format === "svg") {
-      await executeArgonMediaTool(
+      await executeMediaTool(
         "write_svg",
         { id: asset.id, svg: asset.svg, filename: asset.filename, embed: asset.embed },
         ctx,
       );
     } else if (asset.format === "mp4") {
-      await executeArgonMediaTool(
+      await executeMediaTool(
         "generate_video",
         {
           id: asset.id,

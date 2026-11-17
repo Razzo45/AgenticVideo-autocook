@@ -39,7 +39,7 @@ describe("task resume", () => {
       .prepare("SELECT type, status FROM jobs WHERE run_id=? ORDER BY created_at")
       .all(run.id) as Array<{ type: string; status: string }>;
     assert.equal(jobs.some((job) => job.type === "script"), false);
-    assert.equal(jobs.find((job) => job.type === "argon_plan")?.status, "error");
-    assert.equal(jobs.filter((job) => job.type === "argon_execute" && job.status === "pending").length, 1);
+    assert.equal(jobs.find((job) => job.type === "task_plan")?.status, "error");
+    assert.equal(jobs.filter((job) => job.type === "task_execute" && job.status === "pending").length, 1);
   });
 });

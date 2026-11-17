@@ -15,7 +15,7 @@ function inferAspect(prompt: string): VideoAspect {
 
 /**
  * One task per submission. The body is the operator prompt and files.
- * A deliverable kind is not part of the request. Argon decides the files.
+ * A deliverable kind is not part of the request. The brain decides the files.
  */
 export async function POST(req: Request) {
   try {

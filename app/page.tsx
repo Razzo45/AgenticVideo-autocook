@@ -87,7 +87,7 @@ export default function CookHomePage() {
         <p className="cook-eyebrow">Autocook</p>
         <h2>Paste the task. Click COOK. Walk away.</h2>
         <p className="sub">
-          Argon reads the prompt and the files, then makes the deliverables. Those files are the downloads.
+          The brain reads the prompt and the files, then makes the deliverables. Those files are the downloads.
         </p>
       </header>
 
@@ -107,7 +107,7 @@ export default function CookHomePage() {
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             required
-            placeholder="Paste the full task and attach the files. Argon decides the deliverables."
+            placeholder="Paste the full task and attach the files. The brain decides the deliverables."
           />
         </div>
 

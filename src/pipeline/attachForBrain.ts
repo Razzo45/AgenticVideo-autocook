@@ -1,16 +1,16 @@
 /**
- * Decide how an attached file reaches Argon.
+ * Decide how an attached file reaches the brain.
  * Images, video, audio, PDF, text, and SVG go through as the file.
  * Word, PowerPoint, and Excel go through as their text and pictures.
  * A zip is opened once and each file inside is handled the same way.
- * A format Argon cannot read is named, and its bytes are not sent.
+ * A format the brain cannot read is named, and its bytes are not sent.
  */
 import fs from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
 import { readOffice } from "./officeText";
 
-export type ArgonAttachment =
+export type TaskAttachment =
   | { kind: "note"; text: string }
   | { kind: "inline"; label: string; mime: string; data: Buffer }
   | { kind: "file"; label: string; mime: string; path: string; forceStage?: boolean };
@@ -78,7 +78,7 @@ function clip(text: string): string {
   return `${text.slice(0, TEXT_MAX_CHARS)}\n[The rest of this file was cut for length.]`;
 }
 
-function note(label: string, text: string): ArgonAttachment {
+function note(label: string, text: string): TaskAttachment {
   return { kind: "note", text: `${label}\n${text}` };
 }
 
@@ -109,7 +109,7 @@ export async function classifyAttachment(input: {
   label?: string;
   /** Original names inside an archive → spilled file, so a later build can place them. */
   placed?: Map<string, string>;
-}): Promise<ArgonAttachment[]> {
+}): Promise<TaskAttachment[]> {
   const label = input.label ?? `Attached file: ${input.name}`;
   const depth = input.depth ?? 0;
   if (!fs.existsSync(input.filePath)) return [note(label, "The file is missing.")];
@@ -154,10 +154,10 @@ export async function classifyAttachment(input: {
   return [note(label, `This format is not read. The file is stored with the task.`)];
 }
 
-async function officePieces(name: string, buf: Buffer, label: string): Promise<ArgonAttachment[]> {
+async function officePieces(name: string, buf: Buffer, label: string): Promise<TaskAttachment[]> {
   const pieces = await readOffice(buf, name);
   if (!pieces) return [note(label, "The office file could not be opened. The file is stored with the task.")];
-  const out: ArgonAttachment[] = [];
+  const out: TaskAttachment[] = [];
   for (const piece of pieces) {
     if (piece.kind === "text") out.push(note(label, clip(piece.text)));
     else out.push({ kind: "inline", label: `Image inside ${name}: ${piece.filename}`, mime: piece.mime, data: piece.data });
@@ -183,7 +183,7 @@ async function zipPieces(
   label: string,
   depth: number,
   placed?: Map<string, string>,
-): Promise<ArgonAttachment[]> {
+): Promise<TaskAttachment[]> {
   if (depth > 0) return [note(label, "Nested archives are not opened. The archive is stored with the task.")];
   let zip: JSZip;
   try {
@@ -195,7 +195,7 @@ async function zipPieces(
     .filter((entry) => !entry.dir && !/(^|\/)(__MACOSX|\.DS_Store|Thumbs\.db)/.test(entry.name) && !entry.name.split("/").pop()?.startsWith("."))
     .sort((a, b) => a.name.localeCompare(b.name));
   const listing = entries.map((entry) => entry.name).join(", ") || "(empty)";
-  const out: ArgonAttachment[] = [note(label, `Archive with ${entries.length} file(s): ${listing}`)];
+  const out: TaskAttachment[] = [note(label, `Archive with ${entries.length} file(s): ${listing}`)];
   let budget = ARCHIVE_MAX_BYTES;
   for (const entry of entries) {
     const bytes = Buffer.from(await entry.async("uint8array"));

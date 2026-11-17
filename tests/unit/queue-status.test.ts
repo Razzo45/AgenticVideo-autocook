@@ -20,11 +20,11 @@ describe("queue status lines", () => {
           sessionId: "gdp:task",
           pipelineMode: "task",
           runStatus: "generating",
-          jobType: "argon_execute",
+          jobType: "task_execute",
           jobStatus: "running",
           taskWeight: 30,
           updatedAt: "2026-11-16T10:40:00.000Z",
-          line: "Argon tool join_videos (tokyo_top_5_video-joined, 12 clips)…",
+          line: "Carbon tool join_videos (tokyo_top_5_video-joined, 12 clips)…",
         },
         {
           runId: "run_orphan",
@@ -44,7 +44,7 @@ describe("queue status lines", () => {
     assert.match(lines[1], /queue runs queued=1 generating=1 exported=3 failed=0/);
     assert.equal(
       lines[2],
-      "run_e5a063de argon_execute running weight=30 idle=20m run=generating task Argon tool join_videos (tokyo_top_5_video-joined, 12 clips)…",
+      "run_e5a063de task_execute running weight=30 idle=20m run=generating task Carbon tool join_videos (tokyo_top_5_video-joined, 12 clips)…",
     );
     assert.match(lines[3], /^run_orphan no-job idle=1m run=queued task /);
   });

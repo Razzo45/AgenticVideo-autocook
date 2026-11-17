@@ -183,10 +183,10 @@ export const scriptPlanSchema = z.object({
   callout_color: z.string().nullable().optional(),
   /**
    * Delivery fps for the finished master (e.g. 24, 25, 30).
-   * Platform stitches at this rate — Argon owns it from the brief.
+   * Platform stitches at this rate — the brain owns it from the brief.
    */
   delivery_fps: z.number().positive().nullable().optional(),
-  /** Delivery resolution class. Platform finishes at this — Argon owns it from the brief. */
+  /** Delivery resolution class. Platform finishes at this — the brain owns it from the brief. */
   delivery_resolution: z.enum(["1080p", "4K"]).nullable().optional(),
   shots: z.array(shotPlanSchema).min(1),
 });

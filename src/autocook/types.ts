@@ -14,7 +14,7 @@ export type PlanCookInput = {
   /** Optional attachment text (scripts, briefs) for the brain. */
   attachmentText?: string;
   attachmentNames?: string[];
-  /** Work dir for Argon media tools (image/video staging during HTML/PPTX plan). */
+  /** Work dir for brain media tools (image/video staging during HTML/PPTX plan). */
   workDir?: string;
   referenceImagePaths?: string[];
   onStatus?: (msg: string) => void;
