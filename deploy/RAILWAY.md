@@ -33,6 +33,9 @@ Web and worker must ship this revision together. New cooks enqueue `task_plan` /
 - `GEMINI_CONCURRENCY=4`, `GEMINI_CONCURRENCY_INITIAL=3` — calls in flight on the one key (brain + image + video + audio). Defaults shown. AIMD halves on a 429.
 - `GEMINI_OMNI_CONCURRENCY=2` — video clips in flight
 - `TASK_SLICE_CONCURRENCY=3` — planned files of one task written side by side
+- `TASK_EXECUTE_CONCURRENCY=2` — tasks generating at the same time across everyone (at most one of them makes video). Worker slots are this plus one for plan reads
+- `QUEUE_AGING_MINUTES=2` — every this many minutes of waiting counts as one deliverable unit (weight 10) lighter, so a heavy task is not passed over forever
+- `TASK_CACHE` — default on; one Gemini context cache per task holds the attached files for every file, continuation and rebuild. `0` sends the files with every call. `TASK_CACHE_TTL_SEC` (45 min), `TASK_CACHE_MIN_TOKENS` (40000)
 - `HYGIENE_INTERVAL_MS` — default 5 min; the sweep runs beside the claim loop
 - `BRAIN_STREAM` — default on; brain replies are streamed and partial text survives a dropped connection. `0` goes back to one unary request per call
 - `BRAIN_STREAM_TIMEOUT_MS` (20 min per streamed call), `BRAIN_STREAM_IDLE_MS` (4 min of silence after text has started)

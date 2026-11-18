@@ -10,6 +10,7 @@ import {
 import { scheduleForJob } from "../pipeline/taskWeight";
 import { TASK_EXECUTE_JOB_SQL, TASK_PLAN_JOB_SQL } from "../pipeline/taskJobs";
 import { clipStatusLine, type QueueSnapshot, type QueueTask } from "../pipeline/queueStatus";
+import { claimSql } from "../pipeline/claimSql";
 import type { AssetRow, JobRow, ReviewRow, RunRow, VariantRow } from "./types";
 
 export { postgresConfigured };
@@ -274,33 +275,8 @@ export async function pgClaimNextJob(): Promise<JobRow | undefined> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const sel = await client.query(
-      `SELECT j.* FROM app.jobs j
-       WHERE j.status = 'pending'
-         AND NOT EXISTS (
-           SELECT 1 FROM app.jobs r WHERE r.run_id = j.run_id AND r.status = 'running'
-         )
-         AND (
-           j.type IN (${TASK_PLAN_JOB_SQL})
-           OR NOT EXISTS (
-             SELECT 1 FROM app.jobs busy
-             WHERE busy.status = 'running' AND busy.type NOT IN (${TASK_PLAN_JOB_SQL})
-           )
-         )
-       ORDER BY
-         CASE
-           WHEN j.type NOT IN (${TASK_PLAN_JOB_SQL}) AND EXISTS (
-             SELECT 1 FROM app.jobs prev
-             WHERE prev.run_id = j.run_id AND prev.status = 'done' AND prev.type NOT IN (${TASK_PLAN_JOB_SQL})
-           ) THEN 0
-           WHEN j.type NOT IN (${TASK_PLAN_JOB_SQL}) THEN 1
-           ELSE 2
-         END,
-         CASE WHEN j.type IN (${TASK_PLAN_JOB_SQL}) THEN 0 ELSE COALESCE(j.task_weight, 10) END ASC,
-         j.created_at ASC
-       LIMIT 1
-       FOR UPDATE SKIP LOCKED`,
-    );
+    const sel = await client.query(`${claimSql("postgres")}
+       FOR UPDATE OF j SKIP LOCKED`);
     const job = sel.rows[0] as Record<string, unknown> | undefined;
     if (!job) {
       await client.query("COMMIT");

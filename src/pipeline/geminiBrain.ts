@@ -143,6 +143,7 @@ function flattenMessages(messages: BrainMessage[]): {
 
 export type BrainUsage = {
   promptTokenCount?: number;
+  cachedContentTokenCount?: number;
   candidatesTokenCount?: number;
   thoughtsTokenCount?: number;
   totalTokenCount?: number;
@@ -292,6 +293,12 @@ export type BrainCompletionOpts = {
    * Otherwise a broken stream is an error and admission may retry the call.
    */
   continuable?: boolean;
+  /**
+   * Name of a context cache holding the shared system instruction and the operator's
+   * files. userParts are then only this call's own text. System messages are ignored:
+   * the instruction is already in the cache.
+   */
+  cachedContent?: string;
 };
 
 /** Argon and Carbon answer 400 when asked for a thinking level they do not implement. */
@@ -325,7 +332,7 @@ export async function brainCompletionText(opts: BrainCompletionOpts): Promise<Br
   const owner = currentGeminiOwnerId() ?? "-";
   const stream = brainStreamEnabled();
   const configFor = (thinkingLevel: ThinkingLevel) => ({
-    ...(system ? { systemInstruction: system } : {}),
+    ...(opts.cachedContent ? { cachedContent: opts.cachedContent } : system ? { systemInstruction: system } : {}),
     ...(opts.json ? { responseMimeType: "application/json" } : {}),
     ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
     thinkingConfig: { thinkingLevel },
@@ -381,9 +388,11 @@ export async function brainCompletionText(opts: BrainCompletionOpts): Promise<Br
             model,
             attempt,
             mode: stream ? "stream" : "unary",
+            cache: opts.cachedContent ? "on" : undefined,
             chars: got.text.length,
             finish: got.finishReason,
             in: got.usage?.promptTokenCount,
+            cached: got.usage?.cachedContentTokenCount,
             out: got.usage?.candidatesTokenCount,
             thoughts: got.usage?.thoughtsTokenCount,
           });

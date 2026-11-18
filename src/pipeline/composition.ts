@@ -219,6 +219,33 @@ ${attached}`;
 }
 
 /**
+ * The instruction shared by every call of one task. It lists the whole plan, and is
+ * the same for every file, so it can sit in a context cache with the operator's files.
+ */
+export function composeTaskInstructions(
+  planned: unknown[],
+  attachedNames: string[],
+  brain: BrainLabel = "Argon",
+): string {
+  return `${composeInstructions(planned, attachedNames, brain)}
+Each turn names the planned file or files to write in that reply. Write only those.`;
+}
+
+/** The short turn after the shared instruction and files: which planned file to write now. */
+export function sliceTurnText(slice: unknown[], otherPlannedFilenames: string[] = []): string {
+  const others = otherPlannedFilenames.map((name) => name.trim()).filter(Boolean);
+  const otherBlock = others.length
+    ? `\nOther files named in this task. A pdf may set "from" to one of these filenames. Do not rewrite those files in this reply.\n${others.join("\n")}\n`
+    : "";
+  const one = slice.length === 1;
+  return `Write ${one ? "this planned file" : "these planned files"} now. Reply with one JSON object holding ${
+    one ? "one deliverable for it" : "one deliverable per file listed"
+  }. Do not add other files.
+${JSON.stringify(slice)}
+${otherBlock}`;
+}
+
+/**
  * Fill empty kind:"svg" bodies from files the brain already wrote with write_svg
  * (same id or filename). Keeps one-shot JSON for small marks; tools for large ones.
  */
