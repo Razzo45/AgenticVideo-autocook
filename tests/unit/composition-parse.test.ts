@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { plannedExecuteSlices, plannedHtmlTargets, plannedSvgTargets } from "../../src/pipeline/taskPipeline";
+import { pdfSiblingFilenames, plannedExecuteSlices, plannedHtmlTargets, plannedSvgTargets } from "../../src/pipeline/taskPipeline";
 import { composeInstructions, parseComposition } from "../../src/pipeline/composition";
 
 describe("composition parse", () => {
@@ -17,6 +17,7 @@ describe("composition parse", () => {
     assert.match(text, /write_svg/);
     assert.match(text, /one write_svg per turn/);
     assert.match(text, /This turn is only the planned file above/);
+    assert.match(text, /another planned file/);
     assert.match(text, /"audio":"keep"/);
     assert.match(text, /"audio":"mute"/);
   });
@@ -49,6 +50,28 @@ describe("composition parse", () => {
         { id: "B", filename: "B.svg" },
       ],
     );
+  });
+
+  it("names the deck on a pdf turn so from can point at it", () => {
+    const text = composeInstructions(
+      [{ deliverable: "pdf", filename: "Board.pdf" }],
+      ["logo.png"],
+      "Argon",
+      ["Deck.pptx"],
+    );
+    assert.match(text, /Deck\.pptx/);
+    assert.match(text, /Do not rewrite those files/);
+    assert.match(text, /another planned file/);
+    assert.doesNotMatch(text, /this same reply/);
+  });
+
+  it("lists sibling filenames only for a pdf slice", () => {
+    const planned = [
+      { deliverable: "pptx", filename: "Deck.pptx" },
+      { deliverable: "pdf", filename: "Board.pdf" },
+    ];
+    assert.deepEqual(pdfSiblingFilenames(planned, [planned[1]!]), ["Deck.pptx"]);
+    assert.deepEqual(pdfSiblingFilenames(planned, [planned[0]!]), []);
   });
 
   it("slices execute so html and video are separate JSON calls", () => {

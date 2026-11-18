@@ -154,13 +154,18 @@ export function composeInstructions(
   planned: unknown[],
   attachedNames: string[],
   brain: BrainLabel = "Argon",
+  otherPlannedFilenames: string[] = [],
 ): string {
   const plan = planned.length ? JSON.stringify(planned) : "(none — the operator message names the files)";
   const attached = attachedNames.length ? attachedNames.join(", ") : "(none)";
+  const others = otherPlannedFilenames.map((name) => name.trim()).filter(Boolean);
   const onlyThis =
     planned.length === 1
       ? `\nThis turn is only the planned file above. Reply with one deliverable for that file. Do not add other files.\n`
       : "";
+  const otherBlock = others.length
+    ? `\nOther files named in this task. A pdf may set "from" to one of these filenames. Do not rewrite those files in this reply.\n${others.join("\n")}\n`
+    : "";
   return `You are ${brain}. The operator message and the attached files are the whole job.
 Reply with one JSON object and nothing else. This reply is the deliverable. Write the copy, the notes, the layout, the HTML, and the SVG here.
 ${onlyThis}
@@ -177,7 +182,7 @@ font is the typeface for that text. A font on the slide or the deck applies wher
 {"type":"image","source":{"kind":"svg","svg":"<svg xmlns=\\"http://www.w3.org/2000/svg\\" viewBox=\\"0 0 64 64\\">...</svg>"}}
 Place a file that is already in the package. generate is for a picture that does not exist yet. svg is markup you write. width and height on a source are the exact pixels.
 
-kind "pdf" — a complete HTML document in "html", or "from" set to the filename of a pptx or html in this same reply.
+kind "pdf" — a complete HTML document in "html", or "from" set to the filename of a pptx or html named in this task (this reply or another planned file).
 In that HTML, list "assets" and write {{asset:id}} where one should appear.
 {"id":"hero","filename":"assets/hero.png","source":{"kind":"place","file":"exact-name.png"}}
 HTML prints in the browser. "from" a pptx prints only where LibreOffice is installed.
@@ -204,7 +209,7 @@ Produce the planned files under the planned filenames. One object per file.
 
 Planned files:
 ${plan}
-
+${otherBlock}
 Attached filenames you can place:
 ${attached}`;
 }
