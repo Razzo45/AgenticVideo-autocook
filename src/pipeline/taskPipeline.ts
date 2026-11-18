@@ -714,14 +714,15 @@ export async function loadTaskDeliverables(runId: string): Promise<TaskDeliverab
   if (!fs.existsSync(manifest)) return [];
   try {
     const rows = JSON.parse(fs.readFileSync(manifest, "utf8")) as TaskDeliverable[];
+    const { runFileExists } = await import("./storage");
     const out: TaskDeliverable[] = [];
     for (const row of rows) {
-      try {
-        await ensureAbsRunFile(row.path);
-      } catch {
-        /* try the local copy */
-      }
-      if (row.path && fs.existsSync(row.path)) out.push(row);
+      if (!row.path) continue;
+      // A file that is only in the bucket still belongs on the list. Downloading
+      // it here dropped anything slow or not yet on this disk, and the platform
+      // then treated the shorter list as the whole cook.
+      const local = fs.existsSync(row.path) && fs.statSync(row.path).size > 0;
+      if (local || (await runFileExists(row.path))) out.push(row);
     }
     return out;
   } catch {
