@@ -2,7 +2,7 @@ import { claimNextJob, reclaimRunningJobs } from "./db";
 import { advanceStuckAutoRuns, processJob } from "./pipeline/orchestrator";
 import { loadModelsConfig } from "./pipeline/config";
 import { RUNS_DIR } from "./pipeline/paths";
-import { runHygieneSweep } from "./pipeline/hygiene";
+import { HYGIENE_INTERVAL_MS, runHygieneSweep } from "./pipeline/hygiene";
 import { ensureRailwaySchema } from "./pipeline/ensureSchema";
 import { logStorageBoot } from "./pipeline/storage";
 import { execFileSync } from "node:child_process";
@@ -129,6 +129,7 @@ async function loop() {
   let lastBeat = Date.now();
   let lastAutoTick = 0;
   let lastHygiene = 0;
+  let hygieneRunning = false;
 
   for (;;) {
     if (Date.now() - lastAutoTick > 5_000) {
@@ -140,18 +141,27 @@ async function loop() {
         console.error("[worker] advanceStuckAutoRuns failed", err);
       }
     }
-    if (Date.now() - lastHygiene > 60_000) {
-      lastHygiene = Date.now();
-      try {
-        const h = await runHygieneSweep();
-        if (h.stagingPurged || h.runsDeleted || h.geminiCulled) {
-          console.log(
-            `[worker] hygiene staging=${h.stagingPurged} deleted=${h.runsDeleted} gemini=${h.geminiCulled}`,
-          );
-        }
-      } catch (err) {
-        console.error("[worker] hygiene failed", err);
-      }
+    // Hygiene runs beside the claim loop. Awaiting it here made every task wait
+    // for a full sweep (minutes of bucket calls) before its job was claimed.
+    if (!hygieneRunning && Date.now() - lastHygiene > HYGIENE_INTERVAL_MS) {
+      hygieneRunning = true;
+      const sweepStarted = Date.now();
+      void runHygieneSweep()
+        .then((h) => {
+          const ms = Date.now() - sweepStarted;
+          if (h.stagingPurged || h.runsDeleted || h.geminiCulled || h.orphansFailed || ms > 30_000) {
+            console.log(
+              `[worker] hygiene staging=${h.stagingPurged} deleted=${h.runsDeleted} gemini=${h.geminiCulled} orphans=${h.orphansFailed ?? 0} ms=${ms}`,
+            );
+          }
+        })
+        .catch((err) => {
+          console.error("[worker] hygiene failed", err);
+        })
+        .finally(() => {
+          hygieneRunning = false;
+          lastHygiene = Date.now();
+        });
     }
     const max = loadModelsConfig().maxParallelRuns;
     while (inFlight.size < max) {
@@ -169,10 +179,11 @@ async function loop() {
         `[worker] ${job.type} run=${job.run_id} id=${job.id} taskWeight=${job.task_weight ?? "?"} slots=${inFlight.size + 1}/${max}`,
       );
       let work!: Promise<void>;
+      const jobStarted = Date.now();
       work = (async () => {
         try {
           await processJob(job);
-          console.log(`[worker] done ${job.type} ${job.id}`);
+          console.log(`[worker] done ${job.type} ${job.id} run=${job.run_id} ms=${Date.now() - jobStarted}`);
         } catch (err) {
           console.error(`[worker] failed ${job.type} ${job.id}`, err);
         }

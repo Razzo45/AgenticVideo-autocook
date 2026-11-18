@@ -227,11 +227,35 @@ export async function generateOmniVideo(opts: {
   /** When true, send the brain's prompt verbatim — no platform modeHint / creative rewrite. */
   brainOwnedPrompt?: boolean;
 }): Promise<void> {
-  return withGeminiAdmission(
-    "omni",
-    () => generateOmniVideoAdmitted(opts),
-    { onStatus: opts.onStatus, maxAttempts: 4 },
-  );
+  await omniSlot();
+  try {
+    return await withGeminiAdmission(
+      "omni",
+      () => generateOmniVideoAdmitted(opts),
+      { onStatus: opts.onStatus, maxAttempts: 4 },
+    );
+  } finally {
+    omniRelease();
+  }
+}
+
+/** Video clips in flight. Kept below the shared Gemini ceiling: clips are the heaviest call. */
+const OMNI_CONCURRENCY = Math.max(1, Math.floor(Number(process.env.GEMINI_OMNI_CONCURRENCY)) || 2);
+let omniActive = 0;
+const omniWaiters: Array<() => void> = [];
+
+function omniSlot(): Promise<void> {
+  if (omniActive < OMNI_CONCURRENCY) {
+    omniActive += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => omniWaiters.push(resolve));
+}
+
+function omniRelease(): void {
+  const next = omniWaiters.shift();
+  if (next) next();
+  else omniActive = Math.max(0, omniActive - 1);
 }
 
 async function generateOmniVideoAdmitted(opts: Parameters<typeof generateOmniVideo>[0]): Promise<void> {

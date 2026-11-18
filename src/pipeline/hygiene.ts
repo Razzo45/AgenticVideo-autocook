@@ -21,9 +21,11 @@ import {
 } from "../db";
 import { RUNS_DIR, runDir } from "./paths";
 import { isKeptTaskMetaFile } from "./taskJobs";
-import { deleteRunPrefix, storageMode } from "./storage";
+import { deleteRunObjectsExcept, deleteRunPrefix, storageMode } from "./storage";
 import { reapGeminiFiles } from "./geminiStaging";
 
+/** How often the worker runs the sweep. It runs beside the claim loop, never inside it. */
+export const HYGIENE_INTERVAL_MS = Number(process.env.HYGIENE_INTERVAL_MS) || 5 * 60_000;
 /** After finish, staging may linger this long if sanitize wasn't called inline. */
 export const STAGING_IDLE_MS = Number(process.env.STAGING_IDLE_MS) || 5 * 60 * 60_000;
 /** Whole run (including download) expires after this since last interaction. */
@@ -122,18 +124,26 @@ export async function sanitizeFinishedRun(runId: string): Promise<{ removed: str
   const keepInputs = run?.status === "failed" || run?.status === "rejected";
   const { removed } = purgeRunStaging(runId, { keepInputs });
   if (storageMode() === "s3") {
-    const prefixes = new Set(removed);
-    for (const name of STAGING_NAMES) {
-      if (keepInputs && name === "inputs") continue;
-      prefixes.add(name);
-    }
-    // Always try shot_* cleanup on bucket even if local was already empty.
-    for (let i = 0; i < 32; i++) prefixes.add(`shot_${i}`);
-    for (const name of prefixes) {
-      await deleteRunPrefix(runId, name).catch(() => undefined);
-    }
+    // Same rule as the local purge, in one listing of the run.
+    const purged = await deleteRunObjectsExcept(
+      runId,
+      (name) => shouldKeepName(name) || (keepInputs && name === "inputs"),
+    );
+    if (purged && !removed.length) removed.push("(bucket)");
   }
+  sanitized.set(runId, run?.status ?? "");
   return { removed };
+}
+
+/**
+ * Runs this process already sanitized, with the status they had then.
+ * The sweep used to re-sanitize every finished run on every pass.
+ * A run that fails, is retried, and finishes again is sanitized again.
+ */
+const sanitized = new Map<string, string>();
+
+export function alreadySanitized(run: Pick<RunRow, "id" | "status">): boolean {
+  return sanitized.get(run.id) === run.status;
 }
 
 export async function deleteEntireRun(runId: string): Promise<void> {
@@ -203,19 +213,30 @@ export async function runHygieneSweep(): Promise<{
     const age = now - touch;
     if (age >= RUN_TTL_MS) {
       if (await runHasBusyJobs(run.id)) continue;
-      await deleteEntireRun(run.id);
+      try {
+        await deleteEntireRun(run.id);
+      } catch (err) {
+        // Leave the rows so the next sweep retries the bucket delete.
+        console.warn(`[hygiene] delete ${run.id} failed`, err instanceof Error ? err.message : err);
+        continue;
+      }
       try {
         await deleteRunRows(run.id);
       } catch {
         /* already gone */
       }
+      sanitized.delete(run.id);
       runsDeleted += 1;
       continue;
     }
     // Finished cooks: drop staging from local + bucket; keep finals only.
-    if (isFinished(run)) {
-      const { removed } = await sanitizeFinishedRun(run.id);
-      if (removed.length) stagingPurged += 1;
+    if (isFinished(run) && !alreadySanitized(run)) {
+      try {
+        const { removed } = await sanitizeFinishedRun(run.id);
+        if (removed.length) stagingPurged += 1;
+      } catch (err) {
+        console.warn(`[hygiene] sanitize ${run.id} failed`, err instanceof Error ? err.message : err);
+      }
     }
   }
 

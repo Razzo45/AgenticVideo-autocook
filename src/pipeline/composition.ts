@@ -14,6 +14,8 @@ import { exportPdf } from "../autocook/exportPdf";
 import { withGeminiOwner } from "./geminiAdmission";
 import type { BrainLabel } from "./brainChoice";
 import { generateLyriaMusic, generateSpeechTts } from "./geminiAudio";
+import { expandInlineFiles, inlineNames, lookupInlineFile } from "./inlineFiles";
+import { stage } from "./stageLog";
 
 const execFileAsync = promisify(execFile);
 const EMU_PER_INCH = 914400;
@@ -205,6 +207,8 @@ kind "audio" — attached files play first, then speech, and a bed is mixed unde
 "speech":[{"text":"...","voice":"Sulafat","style":"..."}]
 "music":{"file":"exact-name.wav"} or "music":{"prompt":"...","instrumental":true,"duration_sec":30}
 
+Attached files inside your markup — write {{inline:exact-name.svg}} where the file should go, in any HTML or SVG you write. The platform pastes the file there, unchanged. An SVG is pasted as its markup, so your CSS can still size and recolour it. Its ids are prefixed, so the same token may be used several times and two marks never collide. A png or jpg becomes a data: URI for src or url(), and so does an SVG when the token sits inside src="…" or url(…). Do not retype the contents of an attached file. Name it.
+
 Produce the planned files under the planned filenames. One object per file.
 
 Planned files:
@@ -268,7 +272,12 @@ export function hydrateHtmlFromStaged(
 
 export function parseComposition(
   text: string,
-  opts?: { stagedSvg?: Map<string, string>; stagedHtml?: Map<string, StagedHtmlFile> },
+  opts?: {
+    stagedSvg?: Map<string, string>;
+    stagedHtml?: Map<string, StagedHtmlFile>;
+    /** When set, every {{inline:name}} must name one of these files. */
+    filesByName?: Map<string, string>;
+  },
 ): Composition {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const rawText = fenced ? fenced[1]! : text;
@@ -294,7 +303,34 @@ export function parseComposition(
   if (opts?.stagedSvg?.size) data = hydrateSvgFromStaged(data, opts.stagedSvg);
   if (opts?.stagedHtml?.size) data = hydrateHtmlFromStaged(data, opts.stagedHtml);
   assertBuildable(data);
+  if (opts?.filesByName) assertInlineFilesExist(data, opts.filesByName);
   return data;
+}
+
+/** Every markup string of one deliverable that may carry {{inline:...}}. */
+function markupOf(item: CompositionDeliverable): string[] {
+  const out: string[] = [];
+  if (item.html) out.push(item.html);
+  if (item.svg) out.push(item.svg);
+  if (item.source?.svg) out.push(item.source.svg);
+  for (const file of item.files ?? []) out.push(file.content);
+  for (const asset of item.assets ?? []) if (asset.source.svg) out.push(asset.source.svg);
+  for (const slide of item.slides ?? []) {
+    for (const el of slide.elements) if (el.source?.svg) out.push(el.source.svg);
+  }
+  return out;
+}
+
+function assertInlineFilesExist(composition: Composition, filesByName: Map<string, string>): void {
+  for (const item of composition.deliverables) {
+    for (const text of markupOf(item)) {
+      for (const name of inlineNames(text)) {
+        if (!lookupInlineFile(filesByName, name)) {
+          throw new Error(`${item.filename}: {{inline:${name}}} does not match an attached filename`);
+        }
+      }
+    }
+  }
 }
 
 export async function buildComposition(opts: {
@@ -377,7 +413,9 @@ export async function buildComposition(opts: {
   }
   for (const row of prepared) {
     if (row.item.kind !== "pdf") continue;
-    const file = await emitPdf(row.item, row.slots, outDir, byFilename, opts.onStatus);
+    const file = await stage(opts.ownerId, `pdf ${row.item.filename}`, () =>
+      emitPdf(row.item, row.slots, outDir, byFilename, opts.onStatus, opts.filesByName),
+    );
     built.push(file);
     byFilename.set(file.filename.toLowerCase(), file.absPath);
   }
@@ -635,7 +673,7 @@ async function resolveSource(opts: {
   const { source, id, ctx } = opts;
   fs.mkdirSync(ctx.stagingDir, { recursive: true });
   if (source.kind === "svg" || source.svg) {
-    const svg = source.svg?.trim();
+    const svg = expandInlineFiles(source.svg?.trim() ?? "", ctx.filesByName);
     if (!svg) throw new Error(`${id}: svg source is empty`);
     const rel = `slots/${id}.svg`;
     await runTool(opts.ownerId, id, ctx, "write_svg", { id, svg, filename: rel });
@@ -727,7 +765,9 @@ async function runTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<void> {
-  await withGeminiOwner(`${ownerId}:${id}`, () => executeMediaTool(name, args, ctx));
+  await stage(ownerId, `${name} ${id}`, () =>
+    withGeminiOwner(`${ownerId}:${id}`, () => executeMediaTool(name, args, ctx)),
+  );
 }
 
 async function stagePlaced(
@@ -904,10 +944,10 @@ async function emitDocument(
 ): Promise<BuiltFile> {
   onStatus?.(`Writing ${item.filename}…`);
   if (item.kind === "pptx") return writePptx(item, slots, outDir, filesByName);
-  if (item.kind === "html") return writeHtml(item, slots, outDir);
+  if (item.kind === "html") return writeHtml(item, slots, outDir, filesByName);
   if (item.kind === "svg") {
     const dest = uniqueDest(outDir, item.filename, ".svg");
-    fs.writeFileSync(dest, item.svg ?? "", "utf8");
+    fs.writeFileSync(dest, expandInlineFiles(item.svg ?? "", filesByName), "utf8");
     return { id: item.id, filename: path.basename(dest), absPath: dest };
   }
   if (item.kind === "image" || item.kind === "video" || item.kind === "audio") {
@@ -926,6 +966,7 @@ async function emitPdf(
   outDir: string,
   byFilename: Map<string, string>,
   onStatus?: (msg: string) => void,
+  filesByName?: Map<string, string>,
 ): Promise<BuiltFile> {
   onStatus?.(`Writing ${item.filename}…`);
   const dest = uniqueDest(outDir, item.filename, ".pdf");
@@ -934,7 +975,7 @@ async function emitPdf(
     fs.mkdirSync(folder, { recursive: true });
     const htmlPath = path.join(folder, "index.html");
     const placed = await placeAssets(item, slots, folder);
-    fs.writeFileSync(htmlPath, substituteAssets(item.html, placed, path.dirname(htmlPath)), "utf8");
+    fs.writeFileSync(htmlPath, expandInlineFiles(substituteAssets(item.html, placed, path.dirname(htmlPath)), filesByName), "utf8");
     const exported = await exportPdf({ sourcePath: htmlPath, outDir: path.dirname(dest), outName: path.basename(dest), onStatus });
     return { id: item.id, filename: path.basename(exported.pdfPath), absPath: exported.pdfPath };
   }
@@ -949,6 +990,7 @@ async function writeHtml(
   item: CompositionDeliverable,
   slots: Map<string, Promise<string>>,
   outDir: string,
+  filesByName?: Map<string, string>,
 ): Promise<BuiltFile> {
   const folder = path.join(outDir, `${safeId(item.id)}-html`);
   fs.mkdirSync(folder, { recursive: true });
@@ -958,7 +1000,7 @@ async function writeHtml(
     const rel = safeRel(file.path);
     const dest = path.join(folder, rel);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, substituteAssets(file.content, placed, path.dirname(dest)), "utf8");
+    fs.writeFileSync(dest, expandInlineFiles(substituteAssets(file.content, placed, path.dirname(dest)), filesByName), "utf8");
     written.push(dest);
   }
   const printPath = htmlEntry(item, folder, written);

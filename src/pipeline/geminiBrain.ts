@@ -17,6 +17,7 @@ import { BRAIN_MODEL } from "./constants";
 import { brainLabel } from "./brainChoice";
 import { currentGeminiOwnerId, withGeminiAdmission } from "./geminiAdmission";
 import {
+  BRAIN_CALL_TIMEOUT_MS,
   BRAIN_ROUND_TIMEOUT_MS,
   getRunSignal,
   isCancelledError,
@@ -194,12 +195,15 @@ export async function brainCompletionText(opts: BrainCompletionOpts): Promise<Br
 
   const requested = opts.thinkingLevel ?? ThinkingLevel.MEDIUM;
   const generate = (thinkingLevel: ThinkingLevel) =>
-    // JSON composition (HTML in the reply) must wait for Gemini — a 13m deadline
-    // plus admission retry on "timed out" discarded the document and looped.
+    // The deadline sits past Gemini's own 10 minute unary bound, so it never cuts a
+    // reply that could still arrive. It only ends a call that would otherwise hang
+    // the whole deliverable queue. Our own deadline is a platform fault: admission
+    // does not retry it, so the document is not regenerated in a loop.
     withGeminiAdmission(
       "brain",
       () =>
-        withStatusHeartbeat(
+        withDeadline(
+          withStatusHeartbeat(
           ai.models.generateContent({
             model,
             contents,
@@ -211,7 +215,9 @@ export async function brainCompletionText(opts: BrainCompletionOpts): Promise<Br
               abortSignal: brainCallSignal(),
             },
           }),
-          { label, onStatus: opts.onStatus, signal: brainCallSignal() },
+            { label, onStatus: opts.onStatus, signal: brainCallSignal() },
+          ),
+          { timeoutMs: BRAIN_CALL_TIMEOUT_MS, label, signal: brainCallSignal() },
         ),
       { onStatus: opts.onStatus },
     );
