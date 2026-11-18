@@ -135,23 +135,35 @@ function flattenMessages(messages: BrainMessage[]): {
   return { system: systemBits.length ? systemBits.join("\n\n") : undefined, parts };
 }
 
-/** Text (optional JSON) completion via the selected brain. */
-export async function brainCompletion(opts: {
+export type BrainText = {
+  text: string;
+  /** Gemini finishReason. MAX_TOKENS means the reply stopped because the output budget ran out. */
+  finishReason?: string;
+};
+
+export type BrainCompletionOpts = {
   model?: string;
   messages: BrainMessage[];
   json?: boolean;
   /** Cap the reply. Gemini's sync default is 65536; composition needs the full document. */
   maxOutputTokens?: number;
+  /** Plan calls keep medium. A deliverable write uses minimal so the budget is the document. */
+  thinkingLevel?: ThinkingLevel;
   /** Operator turn, including attached files. When set, message text parts are not used. */
   userParts?: Part[];
   onStatus?: (msg: string) => void;
-}): Promise<string> {
+  /** Status line for this call. Defaults to the generic writing line. */
+  activity?: string;
+};
+
+/** Text reply plus the reason the model stopped. Empty text is returned; callers decide what that means. */
+export async function brainCompletionText(opts: BrainCompletionOpts): Promise<BrainText> {
   const ai = brainClient();
   const model = opts.model?.trim() || BRAIN_MODEL;
   const { system, parts } = flattenMessages(opts.messages);
   const userParts = opts.userParts?.length ? opts.userParts : (parts as Part[]);
   if (!userParts.length) throw new Error("brainCompletion: empty user content");
-  const label = `${brainLabel(model)} is writing the deliverables`;
+  const label = opts.activity?.trim() || `${brainLabel(model)} is writing the deliverables`;
   opts.onStatus?.(`${label}…`);
 
   // JSON composition (HTML in the reply) must wait for Gemini — a 13m deadline
@@ -167,7 +179,7 @@ export async function brainCompletion(opts: {
             ...(system ? { systemInstruction: system } : {}),
             ...(opts.json ? { responseMimeType: "application/json" } : {}),
             ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
-            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            thinkingConfig: { thinkingLevel: opts.thinkingLevel ?? ThinkingLevel.MEDIUM },
             abortSignal: brainCallSignal(),
           },
         }),
@@ -175,8 +187,21 @@ export async function brainCompletion(opts: {
       ),
     { onStatus: opts.onStatus },
   );
-  const text = (result.text ?? "").trim();
-  if (!text) throw new Error(`${brainLabel(model)} brain (${model}) returned no content`);
+  const finish = result.candidates?.[0]?.finishReason;
+  return {
+    text: result.text ?? "",
+    finishReason: finish ? String(finish) : undefined,
+  };
+}
+
+/** Text (optional JSON) completion via the selected brain. */
+export async function brainCompletion(opts: BrainCompletionOpts): Promise<string> {
+  const got = await brainCompletionText(opts);
+  const text = got.text.trim();
+  if (!text) {
+    const model = opts.model?.trim() || BRAIN_MODEL;
+    throw new Error(`${brainLabel(model)} brain (${model}) returned no content`);
+  }
   return text;
 }
 

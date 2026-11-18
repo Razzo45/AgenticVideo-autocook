@@ -1,10 +1,11 @@
 /**
  * One brain session for the operator prompt and files.
- * The brain writes each deliverable in one reply. The platform builds the files.
+ * The brain writes each deliverable. The platform builds the files.
+ * A reply cut off by the output limit is continued. It is not rewritten.
  */
 import fs from "node:fs";
 import path from "node:path";
-import type { Part } from "@google/genai";
+import { ThinkingLevel, type Part } from "@google/genai";
 import {
   MEDIA_TOOL_DECLARATIONS,
   executeMediaTool,
@@ -12,11 +13,22 @@ import {
 } from "../autocook/mediaTools";
 import {
   brainCompletion,
+  brainCompletionText,
   brainGuidedWriteSvgThenJson,
   brainWithTools,
   type GuidedHtmlTarget,
   type GuidedSvgTarget,
 } from "./geminiBrain";
+import {
+  DELIVERABLE_CONTINUATIONS,
+  DELIVERABLE_MAX_OUTPUT_TOKENS,
+  continuationPrompt,
+  continuationTail,
+  isCutOffFinish,
+  isCutOffParseError,
+  jsonSliceParsable,
+  stitchDeliverableText,
+} from "./deliverableReceive";
 import { BRAIN_MODEL } from "./constants";
 import { brainLabel, type BrainLabel } from "./brainChoice";
 import { hydrateRunInputs } from "./inputs";
@@ -62,6 +74,79 @@ export function plannedSvgTargets(items: PlannedDeliverable[]): GuidedSvgTarget[
 
 function isSvgDeliverable(item: PlannedDeliverable): boolean {
   return String(item.deliverable ?? "").trim().toLowerCase() === "svg";
+}
+
+function plannedFilenames(items: PlannedDeliverable[]): string[] {
+  const names: string[] = [];
+  for (const item of items) {
+    const name = String(item.filename ?? "").trim();
+    if (name) names.push(name);
+  }
+  return names;
+}
+
+/** Filenames a pdf slice may point at with "from". Other slices get no extra list. */
+export function pdfSiblingFilenames(planned: PlannedDeliverable[], slice: PlannedDeliverable[]): string[] {
+  const wantsFrom = slice.some((item) => String(item.deliverable ?? "").trim().toLowerCase() === "pdf");
+  if (!wantsFrom) return [];
+  const here = new Set(plannedFilenames(slice).map((name) => name.toLowerCase()));
+  return plannedFilenames(planned).filter((name) => !here.has(name.toLowerCase()));
+}
+
+function replyBreak(
+  text: string,
+  finish: string | undefined,
+  parse: (raw: string) => void,
+): "ok" | "cutoff" | "other" {
+  try {
+    parse(text);
+    return "ok";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (isCutOffParseError(message)) return "cutoff";
+    // The budget ran out and the text is not a finished object. Treat that as the same cut.
+    if (isCutOffFinish(finish) && !jsonSliceParsable(text)) return "cutoff";
+    return "other";
+  }
+}
+
+/**
+ * If the reply stopped inside the JSON, ask for the missing suffix and append it.
+ * A reply that parses, or that failed for a real shape mistake, is returned as-is.
+ */
+async function continueCutOffJson(opts: {
+  text: string;
+  finishReason: string | undefined;
+  model: string;
+  userParts: Part[];
+  activity: string;
+  onStatus?: (msg: string) => void;
+  parse: (raw: string) => void;
+}): Promise<string> {
+  let text = opts.text;
+  let finish = opts.finishReason;
+  for (let i = 0; i < DELIVERABLE_CONTINUATIONS; i++) {
+    const broken = replyBreak(text, finish, opts.parse);
+    if (broken !== "cutoff") return text;
+    const prompt = continuationPrompt(continuationTail(text));
+    opts.onStatus?.(`${opts.activity} was cut off — continuing the same JSON…`);
+    const next = await brainCompletionText({
+      model: opts.model,
+      messages: [{ role: "system", content: prompt }],
+      userParts: [...opts.userParts, { text: prompt }],
+      json: false,
+      maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
+      thinkingLevel: ThinkingLevel.MINIMAL,
+      onStatus: opts.onStatus,
+      activity: `${opts.activity} continuing`,
+    });
+    if (!next.text.trim()) break;
+    const stitched = stitchDeliverableText(text, next.text);
+    if (stitched === text) break;
+    text = stitched;
+    finish = next.finishReason;
+  }
+  return text;
 }
 
 /**
@@ -282,10 +367,27 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   const merged: Composition["deliverables"] = [];
   for (let sliceIndex = 0; sliceIndex < slices.length; sliceIndex++) {
     const slice = slices[sliceIndex]!;
-    const system = composeInstructions(slice, attachedNames, label);
+    const siblings = pdfSiblingFilenames(planned, slice);
+    const system = composeInstructions(slice, attachedNames, label, siblings);
     const names = slice.map((item) => item.filename || item.deliverable).join(", ");
     const sliceLabel = `${label} ${sliceIndex + 1}/${slices.length} (${names})`;
     const svgSlice = slice.length >= 2 && slice.every(isSvgDeliverable);
+
+    const parseSlice = (raw: string) =>
+      parseComposition(raw, {
+        stagedSvg: collectStagedSvg(toolCtx, filesByName),
+        stagedHtml: collectStagedHtml(toolCtx, filesByName),
+      });
+    const receive = (raw: string, finish: string | undefined, activity: string) =>
+      continueCutOffJson({
+        text: raw,
+        finishReason: finish,
+        model,
+        userParts,
+        activity,
+        onStatus: onBrainStatus,
+        parse: parseSlice,
+      });
 
     let text: string;
     if (svgSlice) {
@@ -298,28 +400,28 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
         onStatus: onBrainStatus,
         onTool: onBrainTool,
       });
+      text = await receive(text, undefined, sliceLabel);
     } else {
-      onBrainStatus(`${sliceLabel}…`);
-      text = await brainCompletion({
+      const written = await brainCompletionText({
         model,
         messages: [{ role: "system", content: system }],
         userParts,
         json: true,
+        maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
+        thinkingLevel: ThinkingLevel.MINIMAL,
         onStatus: onBrainStatus,
+        activity: sliceLabel,
       });
+      if (!written.text.trim()) throw new Error(`${label} brain (${model}) returned no content`);
+      text = await receive(written.text, written.finishReason, sliceLabel);
     }
-
-    const parseSlice = (raw: string) =>
-      parseComposition(raw, {
-        stagedSvg: collectStagedSvg(toolCtx, filesByName),
-        stagedHtml: collectStagedHtml(toolCtx, filesByName),
-      });
 
     let piece: Composition;
     try {
       piece = parseSlice(text);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (isCutOffParseError(message)) throw err;
       const ping = `${system}\n\nThe previous reply could not be built (${message}). Reply with the JSON object only.`;
       if (svgSlice) {
         text = await brainWithTools({
@@ -335,23 +437,23 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
           onStatus: onBrainStatus,
           onTool: onBrainTool,
         });
+        text = await receive(text, undefined, sliceLabel);
       } else {
-        text = await brainCompletion({
+        const rewritten = await brainCompletionText({
           model,
-          messages: [
-            { role: "system", content: ping },
-            {
-              role: "user",
-              content: `The previous reply could not be built (${message}). Reply with the JSON object only.`,
-            },
-          ],
+          messages: [{ role: "system", content: ping }],
           userParts: [
             ...userParts,
             { text: `The previous reply could not be built (${message}). Reply with the JSON object only.` },
           ],
           json: true,
+          maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
+          thinkingLevel: ThinkingLevel.MINIMAL,
           onStatus: onBrainStatus,
+          activity: `${sliceLabel} rebuilding`,
         });
+        if (!rewritten.text.trim()) throw new Error(`${label} brain (${model}) returned no content`);
+        text = await receive(rewritten.text, rewritten.finishReason, `${sliceLabel} rebuilding`);
       }
       piece = parseSlice(text);
     }
