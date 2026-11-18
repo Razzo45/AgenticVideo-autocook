@@ -108,21 +108,46 @@ export function isCancelledError(err: unknown): boolean {
   return /cook cancelled|RunCancelledError|aborted/i.test(msg);
 }
 
-/** Ticker only — does not time out or abort the work. */
+/** Ticker only — does not time out. Honors AbortSignal so Delete can stop a wait. */
 export async function withStatusHeartbeat<T>(
   work: Promise<T>,
-  opts: { label: string; onStatus?: (msg: string) => void; heartbeatMs?: number },
+  opts: { label: string; onStatus?: (msg: string) => void; heartbeatMs?: number; signal?: AbortSignal },
 ): Promise<T> {
-  if (!opts.onStatus) return work;
+  if (opts.signal?.aborted) {
+    throw opts.signal.reason instanceof Error
+      ? opts.signal.reason
+      : new PlatformFaultError(`${opts.label} aborted`);
+  }
+  if (!opts.onStatus && !opts.signal) return work;
   const started = Date.now();
-  const heartbeat = setInterval(() => {
-    const sec = Math.round((Date.now() - started) / 1000);
-    opts.onStatus?.(`${opts.label} (waiting ${sec}s)…`);
-  }, opts.heartbeatMs ?? 20_000);
+  const heartbeat = opts.onStatus
+    ? setInterval(() => {
+        const sec = Math.round((Date.now() - started) / 1000);
+        opts.onStatus?.(`${opts.label} (waiting ${sec}s)…`);
+      }, opts.heartbeatMs ?? 20_000)
+    : null;
+  let onAbort: (() => void) | null = null;
   try {
-    return await work;
+    return await new Promise<T>((resolve, reject) => {
+      onAbort = () => {
+        reject(
+          opts.signal?.reason instanceof Error
+            ? opts.signal.reason
+            : new PlatformFaultError(`${opts.label} aborted`),
+        );
+      };
+      if (opts.signal) {
+        if (opts.signal.aborted) {
+          onAbort();
+          return;
+        }
+        opts.signal.addEventListener("abort", onAbort, { once: true });
+      }
+      work.then(resolve, reject);
+    });
   } finally {
-    clearInterval(heartbeat);
+    if (heartbeat) clearInterval(heartbeat);
+    if (opts.signal && onAbort) opts.signal.removeEventListener("abort", onAbort);
   }
 }
 

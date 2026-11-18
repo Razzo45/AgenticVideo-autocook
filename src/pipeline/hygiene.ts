@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
-  getDb,
+  deleteRunRows,
   getRun,
   listRuns,
   releaseStuckTaskPlanJobs,
@@ -202,16 +202,12 @@ export async function runHygieneSweep(): Promise<{
     const touch = lastTouchMs(run);
     const age = now - touch;
     if (age >= RUN_TTL_MS) {
+      if (await runHasBusyJobs(run.id)) continue;
       await deleteEntireRun(run.id);
       try {
-        getDb().prepare(`DELETE FROM cook_requests WHERE run_id = ?`).run(run.id);
-        getDb().prepare(`DELETE FROM jobs WHERE run_id = ?`).run(run.id);
-        getDb().prepare(`DELETE FROM variants WHERE run_id = ?`).run(run.id);
-        getDb().prepare(`DELETE FROM assets WHERE run_id = ?`).run(run.id);
-        getDb().prepare(`DELETE FROM reviews WHERE run_id = ?`).run(run.id);
-        getDb().prepare(`DELETE FROM runs WHERE id = ?`).run(run.id);
+        await deleteRunRows(run.id);
       } catch {
-        /* ignore — Postgres path uses deleteRunRows elsewhere */
+        /* already gone */
       }
       runsDeleted += 1;
       continue;

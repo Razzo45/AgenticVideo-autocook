@@ -568,6 +568,14 @@ export async function processJob(job: JobRow): Promise<void> {
   }
   const payload = JSON.parse(job.payload_json || "{}") as { shotIndex?: number; sourceVariantId?: string };
   beginRunControl(run.id);
+  // Delete hits the web process; this worker only notices when the row is gone.
+  const goneWatch = setInterval(() => {
+    void getRun(run.id)
+      .then((row) => {
+        if (!row) cancelRunControl(run.id, "Run deleted");
+      })
+      .catch(() => undefined);
+  }, 3_000);
   try {
     // GDP-style owner fairness: all Gemini calls in this job share run id.
     await withGeminiOwner(run.id, async () => {
@@ -662,6 +670,7 @@ export async function processJob(job: JobRow): Promise<void> {
     }
     if (!isCancelledError(err)) throw err;
   } finally {
+    clearInterval(goneWatch);
     endRunControl(run.id);
   }
 }
@@ -2469,12 +2478,7 @@ export async function retryRun(runId: string): Promise<void> {
   }
 
   // Drop stale queue entries so resume does not double-bill alongside a leftover job.
-  const ts = new Date().toISOString();
-  getDb()
-    .prepare(
-      `UPDATE jobs SET status='error', error=?, updated_at=? WHERE run_id=? AND status IN ('pending','running')`,
-    )
-    .run("Superseded by scene resume", ts, run.id);
+  await errorBusyJobsForRun(run.id, "Superseded by scene resume");
 
   if (run.pipeline_mode === "task") {
     await updateRun(

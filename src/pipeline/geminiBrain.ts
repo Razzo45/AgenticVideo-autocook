@@ -171,7 +171,7 @@ export async function brainCompletion(opts: {
             abortSignal: brainCallSignal(),
           },
         }),
-        { label, onStatus: opts.onStatus },
+        { label, onStatus: opts.onStatus, signal: brainCallSignal() },
       ),
     { onStatus: opts.onStatus },
   );

@@ -42,5 +42,10 @@ describe("updateRun terminal ticker guard", () => {
     await updateRun(run.id, { status: "stitching" });
     assert.equal((await getRun(run.id))?.status, "rejected");
   });
+
+  it("ignores ticker updates after the run row is gone", async () => {
+    const { updateRun } = await import("../../src/db/index");
+    await updateRun("run_deleted_missing", { error: "Carbon 1/2 (page.html) (waiting 40s)…" });
+  });
 });
 
