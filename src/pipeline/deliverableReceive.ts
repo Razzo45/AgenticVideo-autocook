@@ -7,9 +7,10 @@
 export const DELIVERABLE_MAX_OUTPUT_TOKENS = 65_536;
 
 /** How many times to ask for the missing suffix of one reply. */
-export const DELIVERABLE_CONTINUATIONS = 3;
+export const DELIVERABLE_CONTINUATIONS = 6;
 
-const TAIL_CHARS = 600;
+/** Shared opening long enough to tell a restarted document from a real suffix. */
+const RESTART_HEAD = 32;
 
 export function isCutOffFinish(reason: string | undefined): boolean {
   return reason === "MAX_TOKENS";
@@ -20,17 +21,19 @@ export function isCutOffParseError(message: string): boolean {
   return /Unterminated string in JSON/i.test(message) || /Unexpected end of JSON/i.test(message);
 }
 
-export function continuationTail(text: string, chars = TAIL_CHARS): string {
-  return text.slice(-chars);
+/** Follow-up when the cut-off reply is already the model's previous turn. */
+export function continuationFollowUp(): string {
+  return `Your previous message stopped early, inside the JSON.
+Continue that same message from its exact last character.
+Output only the missing suffix. Do not repeat text you already wrote. Do not start a new JSON object. Do not use markdown fences.`;
 }
 
-export function continuationPrompt(tail: string): string {
-  return `The previous JSON reply was cut off by the output limit.
-Continue character-for-character from the tail below.
-Output only the missing suffix. Do not repeat the tail. Do not start a new JSON object. Do not use markdown fences.
-
-TAIL:
-${tail}`;
+function sameDocumentRestart(prev: string, extra: string): boolean {
+  const head = prev.slice(0, Math.min(RESTART_HEAD, prev.length));
+  if (head.length < 24) return false;
+  if (extra.startsWith(head)) return true;
+  const extraHead = extra.slice(0, Math.min(RESTART_HEAD, extra.length));
+  return extraHead.length >= 24 && prev.startsWith(extraHead);
 }
 
 function unwrapFence(text: string): string {
@@ -63,11 +66,15 @@ function joinOverlap(prev: string, extra: string): string {
 
 /**
  * Append a continuation onto a cut-off reply.
+ * A restart of the same document is kept as the longer draft, not concatenated.
  * When the continuation is itself a finished object and the previous text is not, keep the finished object.
  */
 export function stitchDeliverableText(prev: string, next: string): string {
   const extra = unwrapFence(next);
   if (!extra.trim()) return prev;
+  const trimmed = extra.trimStart();
+  const restart = sameDocumentRestart(prev, extra) ? extra : sameDocumentRestart(prev, trimmed) ? trimmed : "";
+  if (restart) return restart.length >= prev.length ? restart : prev;
   const joined = joinOverlap(prev, extra);
   if (jsonSliceParsable(joined)) return joined;
   if (jsonSliceParsable(extra) && !jsonSliceParsable(prev)) return extra.trim();

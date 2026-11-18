@@ -50,4 +50,13 @@ describe("deliverable receive", () => {
     assert.equal(jsonSliceParsable(cut), false);
     assert.equal(stitchDeliverableText(cut, deck), deck);
   });
+
+  it("keeps the longer unfinished draft when a continuation restarts the same JSON", () => {
+    const cut = deck.slice(0, 50);
+    const longer = deck.slice(0, 120);
+    assert.equal(jsonSliceParsable(cut), false);
+    assert.equal(jsonSliceParsable(longer), false);
+    assert.equal(stitchDeliverableText(cut, longer), longer);
+    assert.equal(stitchDeliverableText(longer, cut), longer);
+  });
 });
