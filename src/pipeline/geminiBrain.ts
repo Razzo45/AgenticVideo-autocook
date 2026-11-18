@@ -147,7 +147,10 @@ export type BrainCompletionOpts = {
   json?: boolean;
   /** Cap the reply. Gemini's sync default is 65536; composition needs the full document. */
   maxOutputTokens?: number;
-  /** Plan calls keep medium. A deliverable write uses minimal so the budget is the document. */
+  /**
+   * Defaults to medium. Argon and Carbon reject MINIMAL.
+   * An unsupported level is retried once at medium.
+   */
   thinkingLevel?: ThinkingLevel;
   /** Operator turn, including attached files. When set, message text parts are not used. */
   userParts?: Part[];
@@ -155,6 +158,12 @@ export type BrainCompletionOpts = {
   /** Status line for this call. Defaults to the generic writing line. */
   activity?: string;
 };
+
+/** Argon and Carbon answer 400 when asked for a thinking level they do not implement. */
+export function isUnsupportedThinkingLevel(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /thinking level/i.test(message) && /not supported/i.test(message);
+}
 
 /** Text reply plus the reason the model stopped. Empty text is returned; callers decide what that means. */
 export async function brainCompletionText(opts: BrainCompletionOpts): Promise<BrainText> {
@@ -166,27 +175,38 @@ export async function brainCompletionText(opts: BrainCompletionOpts): Promise<Br
   const label = opts.activity?.trim() || `${brainLabel(model)} is writing the deliverables`;
   opts.onStatus?.(`${label}…`);
 
-  // JSON composition (HTML in the reply) must wait for Gemini — a 13m deadline
-  // plus admission retry on "timed out" discarded the document and looped.
-  const result = await withGeminiAdmission(
-    "brain",
-    () =>
-      withStatusHeartbeat(
-        ai.models.generateContent({
-          model,
-          contents: [{ role: "user", parts: userParts }],
-          config: {
-            ...(system ? { systemInstruction: system } : {}),
-            ...(opts.json ? { responseMimeType: "application/json" } : {}),
-            ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
-            thinkingConfig: { thinkingLevel: opts.thinkingLevel ?? ThinkingLevel.MEDIUM },
-            abortSignal: brainCallSignal(),
-          },
-        }),
-        { label, onStatus: opts.onStatus, signal: brainCallSignal() },
-      ),
-    { onStatus: opts.onStatus },
-  );
+  const requested = opts.thinkingLevel ?? ThinkingLevel.MEDIUM;
+  const generate = (thinkingLevel: ThinkingLevel) =>
+    // JSON composition (HTML in the reply) must wait for Gemini — a 13m deadline
+    // plus admission retry on "timed out" discarded the document and looped.
+    withGeminiAdmission(
+      "brain",
+      () =>
+        withStatusHeartbeat(
+          ai.models.generateContent({
+            model,
+            contents: [{ role: "user", parts: userParts }],
+            config: {
+              ...(system ? { systemInstruction: system } : {}),
+              ...(opts.json ? { responseMimeType: "application/json" } : {}),
+              ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
+              thinkingConfig: { thinkingLevel },
+              abortSignal: brainCallSignal(),
+            },
+          }),
+          { label, onStatus: opts.onStatus, signal: brainCallSignal() },
+        ),
+      { onStatus: opts.onStatus },
+    );
+
+  let result;
+  try {
+    result = await generate(requested);
+  } catch (err) {
+    if (requested === ThinkingLevel.MEDIUM || !isUnsupportedThinkingLevel(err)) throw err;
+    opts.onStatus?.(`${label} — ${requested} thinking is not supported, retrying at medium…`);
+    result = await generate(ThinkingLevel.MEDIUM);
+  }
   const finish = result.candidates?.[0]?.finishReason;
   return {
     text: result.text ?? "",
