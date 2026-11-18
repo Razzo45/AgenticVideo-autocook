@@ -20,7 +20,23 @@ const IMAGE_MIME: Record<string, string> = {
   ".webp": "image/webp",
   ".gif": "image/gif",
 };
-const INLINE_MAX_BYTES = 8 * 1024 * 1024;
+/**
+ * A guard against inlining something absurd, not a quality rule. A 12 MB photo for a
+ * print piece is an ordinary input and is embedded as it is.
+ */
+const INLINE_MAX_BYTES = (Number(process.env.INLINE_MAX_MB) || 64) * 1024 * 1024;
+
+/** Throws when the named file cannot be inlined (wrong type, or over the guard). */
+export function assertInlinable(abs: string, name: string): void {
+  const size = fs.statSync(abs).size;
+  if (size > INLINE_MAX_BYTES) {
+    throw new Error(`{{inline:${name}}} is ${size} bytes. Place it as an asset instead.`);
+  }
+  const ext = path.extname(abs).toLowerCase();
+  if (!TEXT_EXT.has(ext) && !IMAGE_MIME[ext]) {
+    throw new Error(`{{inline:${name}}} is not a text file or an image. Place it as an asset instead.`);
+  }
+}
 
 /** Names used in {{inline:...}} tokens, in order of first use. */
 export function inlineNames(content: string | undefined | null): string[] {
@@ -85,10 +101,7 @@ function inUrlPosition(before: string): boolean {
 }
 
 function expansionFor(abs: string, name: string, asUrl: boolean): string {
-  const size = fs.statSync(abs).size;
-  if (size > INLINE_MAX_BYTES) {
-    throw new Error(`{{inline:${name}}} is ${size} bytes. Place it as an asset instead.`);
-  }
+  assertInlinable(abs, name);
   const ext = path.extname(abs).toLowerCase();
   if (ext === ".svg" && asUrl) {
     return `data:image/svg+xml;base64,${fs.readFileSync(abs).toString("base64")}`;

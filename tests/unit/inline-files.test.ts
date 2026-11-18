@@ -67,6 +67,24 @@ describe("inline attached files", () => {
     assert.ok(out.includes('id="tern-logo-glyph0-0"'), "the bare token is still markup");
   });
 
+  it("embeds a large photo as it is (run_87814344: a 12.5 MB jpg)", () => {
+    const { dir, files } = fixture();
+    const photo = path.join(dir, "mysupportlineimag.jpg");
+    fs.writeFileSync(photo, Buffer.alloc(12_500_502, 7));
+    files.set("mysupportlineimag.jpg", photo);
+    const out = expandInlineFiles(`<image href="{{inline:mysupportlineimag.jpg}}"/>`, files);
+    assert.ok(out.startsWith('<image href="data:image/jpeg;base64,'));
+    assert.ok(out.length > 16_000_000);
+  });
+
+  it("a file that cannot be inlined is refused at parse time, with the fix named", () => {
+    const { files } = fixture();
+    const reply = JSON.stringify({
+      deliverables: [{ id: "p", filename: "P.pdf", kind: "pdf", html: `<video src="{{inline:clip.mp4}}"></video>` }],
+    });
+    assert.throws(() => parseComposition(reply, { filesByName: files }), /P\.pdf: .*Place it as an asset instead/);
+  });
+
   it("names the file that is missing", () => {
     const { files } = fixture();
     assert.throws(() => expandInlineFiles(`{{inline:Nope.svg}}`, files), /Attached file not found: Nope\.svg/);

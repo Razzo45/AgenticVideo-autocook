@@ -14,7 +14,7 @@ import { exportPdf } from "../autocook/exportPdf";
 import { withGeminiOwner } from "./geminiAdmission";
 import type { BrainLabel } from "./brainChoice";
 import { generateLyriaMusic, generateSpeechTts } from "./geminiAudio";
-import { expandInlineFiles, inlineNames, lookupInlineFile } from "./inlineFiles";
+import { assertInlinable, expandInlineFiles, inlineNames, lookupInlineFile } from "./inlineFiles";
 import { stage } from "./stageLog";
 
 const execFileAsync = promisify(execFile);
@@ -325,8 +325,15 @@ function assertInlineFilesExist(composition: Composition, filesByName: Map<strin
   for (const item of composition.deliverables) {
     for (const text of markupOf(item)) {
       for (const name of inlineNames(text)) {
-        if (!lookupInlineFile(filesByName, name)) {
+        const abs = lookupInlineFile(filesByName, name);
+        if (!abs) {
           throw new Error(`${item.filename}: {{inline:${name}}} does not match an attached filename`);
+        }
+        // Checked while the brain can still be asked to fix it, not at build time.
+        try {
+          assertInlinable(abs, name);
+        } catch (err) {
+          throw new Error(`${item.filename}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     }
