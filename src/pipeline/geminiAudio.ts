@@ -13,7 +13,19 @@ import {
   AUDIO_TTS_MODEL,
 } from "./constants";
 
+import { currentGeminiOwnerId, withGeminiAdmission } from "./geminiAdmission";
+import { MUSIC_TIMEOUT_MS, TTS_TIMEOUT_MS, getRunSignal, withDeadline } from "./runControl";
+
 export { AUDIO_TTS_MODEL, AUDIO_MUSIC_MODEL, AUDIO_MUSIC_CLIP_MODEL, AUDIO_EXTRACT_MODEL };
+
+/** Admission (429 backoff), a deadline, and the run's cancel signal around one audio call. */
+function audioCall<T>(label: string, timeoutMs: number, work: () => Promise<T>, onStatus?: (msg: string) => void): Promise<T> {
+  const owner = currentGeminiOwnerId();
+  const signal = owner ? getRunSignal(owner) : undefined;
+  return withGeminiAdmission("audio", () => withDeadline(work(), { timeoutMs, label, signal, onStatus }), {
+    onStatus,
+  });
+}
 
 /** Prebuilt Gemini TTS studio voices (Interactions speech_config.voice). */
 export const GEMINI_TTS_VOICES = [
@@ -146,19 +158,25 @@ export async function generateSpeechTts(opts: {
     contentBlock.annotations = [{ type: "speech_metadata", style }];
   }
 
-  const interaction = await ai.interactions.create({
-    model: AUDIO_TTS_MODEL,
-    input: [
-      {
-        type: "user_input",
-        content: [contentBlock],
-      },
-    ] as never,
-    response_format: { type: "audio" },
-    generation_config: {
-      speech_config: [{ voice }],
-    } as never,
-  });
+  const interaction = await audioCall(
+    `Gemini TTS (${voice})`,
+    TTS_TIMEOUT_MS,
+    () =>
+      ai.interactions.create({
+        model: AUDIO_TTS_MODEL,
+        input: [
+          {
+            type: "user_input",
+            content: [contentBlock],
+          },
+        ] as never,
+        response_format: { type: "audio" },
+        generation_config: {
+          speech_config: [{ voice }],
+        } as never,
+      }),
+    opts.onStatus,
+  );
 
   const { bytes, mime } = extractAudioBytes(interaction as never);
   writeAudioFile(opts.outPath, bytes, mime);
@@ -381,11 +399,17 @@ export async function generateLyriaMusic(opts: {
 
   opts.onStatus?.(`Lyria (${model})…`);
 
-  const interaction = await ai.interactions.create({
-    model,
-    input: prompt as never,
-    response_format: { type: "audio" },
-  });
+  const interaction = await audioCall(
+    `Lyria (${model})`,
+    MUSIC_TIMEOUT_MS,
+    () =>
+      ai.interactions.create({
+        model,
+        input: prompt as never,
+        response_format: { type: "audio" },
+      }),
+    opts.onStatus,
+  );
 
   const { bytes, mime } = extractAudioBytes(interaction as never);
   writeAudioFile(opts.outPath, bytes, mime);

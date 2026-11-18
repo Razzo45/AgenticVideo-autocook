@@ -43,6 +43,8 @@ import {
   type Composition,
 } from "./composition";
 import { enqueueJob, updateRun, upsertAsset, type RunRow } from "../db";
+import { withGeminiOwner } from "./geminiAdmission";
+import { logStage, stage } from "./stageLog";
 import {
   TASK_EXECUTE_JOB,
   ensureTaskPlanFile,
@@ -120,6 +122,7 @@ async function continueCutOffJson(opts: {
   userParts: Part[];
   activity: string;
   onStatus?: (msg: string) => void;
+  onContinue?: () => void;
   parse: (raw: string) => void;
 }): Promise<string> {
   let text = opts.text;
@@ -129,6 +132,7 @@ async function continueCutOffJson(opts: {
     if (broken !== "cutoff") return text;
     const followUp = continuationFollowUp();
     opts.onStatus?.(`${opts.activity} was cut off — continuing the same JSON…`);
+    opts.onContinue?.();
     const next = await brainCompletionText({
       model: opts.model,
       messages: [{ role: "system", content: followUp }],
@@ -160,6 +164,65 @@ export function plannedExecuteSlices(items: PlannedDeliverable[]): PlannedDelive
     return [svgs, ...items.filter((item) => !isSvgDeliverable(item)).map((item) => [item])];
   }
   return items.map((item) => [item]);
+}
+
+function sameName(a: string | undefined, b: string | undefined): boolean {
+  const x = String(a ?? "").trim().toLowerCase();
+  const y = String(b ?? "").trim().toLowerCase();
+  return Boolean(x) && x === y;
+}
+
+/**
+ * One call writes the files it was asked for. A reply that also rewrites other
+ * planned files is cut back to its own slice, so a task does not ship duplicates.
+ * A single-file call whose reply renamed the file keeps the first deliverable.
+ */
+export function keepPlannedDeliverables<T extends { id: string; filename: string }>(
+  slice: PlannedDeliverable[],
+  written: T[],
+): { kept: T[]; dropped: T[] } {
+  if (!slice.length || written.length <= slice.length) return { kept: written, dropped: [] };
+  const kept: T[] = [];
+  const used = new Set<T>();
+  for (const want of slice) {
+    const hit =
+      written.find((item) => !used.has(item) && sameName(item.filename, want.filename)) ??
+      written.find((item) => !used.has(item) && sameName(item.id, want.id));
+    if (hit) {
+      used.add(hit);
+      kept.push(hit);
+    }
+  }
+  if (!kept.length) {
+    const first = written.slice(0, slice.length);
+    return { kept: first, dropped: written.slice(slice.length) };
+  }
+  return { kept, dropped: written.filter((item) => !used.has(item)) };
+}
+
+/** How many planned files one task writes at the same time. */
+export function sliceConcurrency(): number {
+  const n = Math.floor(Number(process.env.TASK_SLICE_CONCURRENCY));
+  return Number.isFinite(n) && n >= 1 ? Math.min(8, n) : 3;
+}
+
+/** Run work over items with a fixed number in flight. Results keep the input order. */
+export async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  work: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const runner = async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      out[index] = await work(items[index]!, index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, runner));
+  return out;
 }
 
 /** Planned HTML files (ids/filenames). Execute still puts page bodies in JSON. */
@@ -300,14 +363,20 @@ export async function jobTaskPlan(run: RunRow): Promise<void> {
   fs.mkdirSync(dir, { recursive: true });
   const { model, label } = runBrain(run);
   await updateRun(run.id, { status: "generating", gate: null, error: `${label} is fetching the task files…` });
-  const { parts: userParts } = await operatorParts(run);
+  const { parts: userParts } = await stage(run.id, "plan inputs", () => operatorParts(run));
   await updateRun(run.id, { status: "generating", gate: null, error: `${label} is reading the task…` });
-  const text = await brainCompletion({
-    model,
-    messages: [{ role: "system", content: planSystem(label) }],
-    userParts,
-    json: true,
-  });
+  const text = await stage(
+    run.id,
+    "plan brain",
+    () =>
+      brainCompletion({
+        model,
+        messages: [{ role: "system", content: planSystem(label) }],
+        userParts,
+        json: true,
+      }),
+    (reply) => ({ chars: reply.length }),
+  );
   const plan = parseTaskPlan(text);
   const planFile = taskPlanWritePath(dir);
   fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
@@ -336,7 +405,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
     filesByName.set(name, file.path);
   }
 
-  const { parts: userParts, placed } = await operatorParts(run);
+  const { parts: userParts, placed } = await stage(run.id, "execute inputs", () => operatorParts(run));
   for (const [name, abs] of placed) filesByName.set(name, abs);
   const plan = await loadTaskPlan(run.id);
   const planned = plan?.deliverables ?? [];
@@ -365,9 +434,10 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   const onBrainTool = (name: string, args: Record<string, unknown>) =>
     executeMediaTool(name, args, toolCtx);
 
-  const merged: Composition["deliverables"] = [];
-  for (let sliceIndex = 0; sliceIndex < slices.length; sliceIndex++) {
-    const slice = slices[sliceIndex]!;
+  const writeSlice = async (slice: PlannedDeliverable[], sliceIndex: number): Promise<Composition["deliverables"]> => {
+    const sliceStarted = Date.now();
+    let continuations = 0;
+    let lastFinish: string | undefined;
     const siblings = pdfSiblingFilenames(planned, slice);
     const system = composeInstructions(slice, attachedNames, label, siblings);
     const names = slice.map((item) => item.filename || item.deliverable).join(", ");
@@ -378,6 +448,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
       parseComposition(raw, {
         stagedSvg: collectStagedSvg(toolCtx, filesByName),
         stagedHtml: collectStagedHtml(toolCtx, filesByName),
+        filesByName,
       });
     const receive = (raw: string, finish: string | undefined, activity: string) =>
       continueCutOffJson({
@@ -387,6 +458,9 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
         userParts,
         activity,
         onStatus: onBrainStatus,
+        onContinue: () => {
+          continuations += 1;
+        },
         parse: parseSlice,
       });
 
@@ -414,6 +488,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
         activity: sliceLabel,
       });
       if (!written.text.trim()) throw new Error(`${label} brain (${model}) returned no content`);
+      lastFinish = written.finishReason;
       text = await receive(written.text, written.finishReason, sliceLabel);
     }
 
@@ -458,24 +533,60 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
       }
       piece = parseSlice(text);
     }
-    merged.push(...piece.deliverables);
+    const { kept, dropped } = keepPlannedDeliverables(slice, piece.deliverables);
+    if (dropped.length) {
+      console.warn(
+        `[task] run=${run.id} slice ${sliceIndex + 1}/${slices.length} wrote ${dropped.length} file(s) it was not asked for — dropped: ${dropped
+          .map((item) => item.filename)
+          .join(", ")}`,
+      );
+    }
+    logStage(run.id, `brain ${sliceIndex + 1}/${slices.length} (${names})`, Date.now() - sliceStarted, {
+      chars: text.length,
+      finish: lastFinish,
+      continuations,
+      dropped: dropped.length || undefined,
+    });
+    return kept;
+  };
+
+  // Each planned file is its own brain call. They run side by side, each as its
+  // own admission owner, so one task's files do not wait in line behind each other.
+  const written = await mapLimit(slices, sliceConcurrency(), (slice, sliceIndex) =>
+    withGeminiOwner(`${run.id}:slice${sliceIndex + 1}`, () => writeSlice(slice, sliceIndex)),
+  );
+  const merged: Composition["deliverables"] = written.flat();
+  // Two calls can still land on one filename. Keep the first.
+  for (let i = merged.length - 1; i >= 0; i--) {
+    const key = merged[i]!.filename.toLowerCase();
+    if (merged.findIndex((item) => item.filename.toLowerCase() === key) !== i) {
+      console.warn(`[task] run=${run.id} duplicate deliverable ${merged[i]!.filename} — dropped`);
+      merged.splice(i, 1);
+    }
   }
+  if (!merged.length) throw new Error(`${label} finished without writing a deliverable`);
 
   const composition: Composition = { deliverables: merged };
   const compositionPath = taskCompositionWritePath(dir);
   fs.writeFileSync(compositionPath, JSON.stringify(composition, null, 2));
   await persistRunFile(compositionPath);
 
-  const built = await buildComposition({
-    composition,
-    workDir: dir,
-    filesByName,
-    ownerId: run.id,
-    brainLabel: label,
-    onStatus: (msg) => {
-      void updateRun(run.id, { error: msg });
-    },
-  });
+  const built = await stage(
+    run.id,
+    "build",
+    () =>
+      buildComposition({
+        composition,
+        workDir: dir,
+        filesByName,
+        ownerId: run.id,
+        brainLabel: label,
+        onStatus: (msg) => {
+          void updateRun(run.id, { error: msg });
+        },
+      }),
+    (files) => ({ files: files.length }),
+  );
   if (!built.length) throw new Error(`${label} finished without creating a file`);
 
   const deliverables: TaskDeliverable[] = [];

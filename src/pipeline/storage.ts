@@ -23,7 +23,36 @@ import {
   HeadBucketCommand,
 } from "@aws-sdk/client-s3";
 import { RUNS_DIR, toPosix } from "./paths";
-import { getRunSignal, PlatformFaultError, S3_PUT_TIMEOUT_MS, withDeadline } from "./runControl";
+import { getRunSignal, PlatformFaultError, S3_CALL_TIMEOUT_MS, S3_PUT_TIMEOUT_MS, withDeadline } from "./runControl";
+
+/**
+ * Files this process already knows are in the bucket, as "size:mtime".
+ * persistRunTree runs after every job; without this every input is uploaded again each time.
+ */
+const inBucket = new Map<string, string>();
+
+function fileStamp(abs: string): string | null {
+  try {
+    const st = fs.statSync(abs);
+    return st.isFile() ? `${st.size}:${Math.round(st.mtimeMs)}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberInBucket(abs: string): void {
+  const stamp = fileStamp(abs);
+  if (stamp) inBucket.set(path.resolve(abs), stamp);
+}
+
+function forgetRunInBucket(runId: string): void {
+  const root = path.resolve(RUNS_DIR, runId) + path.sep;
+  for (const key of inBucket.keys()) if (key.startsWith(root)) inBucket.delete(key);
+}
+
+function s3Call(): { abortSignal: AbortSignal } {
+  return { abortSignal: AbortSignal.timeout(S3_CALL_TIMEOUT_MS) };
+}
 
 function envFirst(...keys: string[]): string {
   for (const k of keys) {
@@ -147,6 +176,8 @@ export async function persistRunFile(absPath: string): Promise<string> {
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return abs;
   if (storageMode() !== "s3") return abs;
   const st = fs.statSync(abs);
+  // Unchanged since this process last put or fetched it.
+  if (inBucket.get(abs) === `${st.size}:${Math.round(st.mtimeMs)}`) return abs;
   const body = fs.createReadStream(abs);
   try {
     const runSignal = getRunSignal(parsed.runId);
@@ -183,6 +214,7 @@ export async function persistRunFile(absPath: string): Promise<string> {
       `S3 put failed for ${parsed.rel}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+  inBucket.set(abs, `${st.size}:${Math.round(st.mtimeMs)}`);
   return abs;
 }
 
@@ -198,8 +230,9 @@ export async function persistRunTree(runId: string, relPrefix = ""): Promise<num
         if (ent.name === ".omni_upload" || ent.name === "node_modules") continue;
         await walk(full);
       } else if (ent.isFile()) {
+        const before = inBucket.get(path.resolve(full));
         await persistRunFile(full);
-        n += 1;
+        if (storageMode() !== "s3" || inBucket.get(path.resolve(full)) !== before) n += 1;
       }
     }
   };
@@ -217,6 +250,7 @@ export async function persistRunTree(runId: string, relPrefix = ""): Promise<num
  */
 export function clearLocalRunCache(runId: string): boolean {
   const dir = localRunPath(runId);
+  forgetRunInBucket(runId);
   if (!fs.existsSync(dir)) return false;
   try {
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 6, retryDelay: 100 });
@@ -247,6 +281,7 @@ export async function ensureLocalRunFile(runId: string, relPath: string): Promis
   if (!out.Body) throw new Error(`Empty bucket object: runs/${runId}/${rel}`);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   await pipeline(out.Body as Readable, fs.createWriteStream(abs));
+  rememberInBucket(abs);
   return abs;
 }
 
@@ -294,6 +329,7 @@ export async function ensureAbsRunFile(absPath: string): Promise<string> {
 export async function deleteRunPrefix(runId: string, relPrefix = ""): Promise<number> {
   const prefix = relPrefix.replace(/\\/g, "/").replace(/^\/+/, "");
   let n = 0;
+  forgetRunInBucket(runId);
   const root = localRunPath(runId, prefix);
   if (fs.existsSync(root)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -309,6 +345,7 @@ export async function deleteRunPrefix(runId: string, relPrefix = ""): Promise<nu
         Prefix: listPrefix === `runs/${runId}/` ? `runs/${runId}/` : listPrefix,
         ContinuationToken: token,
       }),
+      s3Call(),
     );
     const keys = (page.Contents ?? []).map((o) => o.Key!).filter(Boolean);
     if (keys.length) {
@@ -317,11 +354,47 @@ export async function deleteRunPrefix(runId: string, relPrefix = ""): Promise<nu
           Bucket: bucket(),
           Delete: { Objects: keys.map((Key) => ({ Key })) },
         }),
+        s3Call(),
       );
       n += keys.length;
     }
     token = page.IsTruncated ? page.NextContinuationToken : undefined;
   } while (token);
+  return n;
+}
+
+/**
+ * Bucket-side staging purge in one listing: delete every object of the run whose
+ * top-level name is not kept. Replaces one list call per staging folder
+ * (40+ round trips per finished run) with one list per 1000 objects.
+ */
+export async function deleteRunObjectsExcept(
+  runId: string,
+  keepTopLevel: (name: string) => boolean,
+): Promise<number> {
+  if (storageMode() !== "s3") return 0;
+  const root = `runs/${runId}/`;
+  let token: string | undefined;
+  let n = 0;
+  do {
+    const page = await s3Client().send(
+      new ListObjectsV2Command({ Bucket: bucket(), Prefix: root, ContinuationToken: token }),
+      s3Call(),
+    );
+    const doomed = (page.Contents ?? [])
+      .map((o) => o.Key ?? "")
+      .filter((key) => key.startsWith(root) && key.length > root.length)
+      .filter((key) => !keepTopLevel(key.slice(root.length).split("/")[0] ?? ""));
+    if (doomed.length) {
+      await s3Client().send(
+        new DeleteObjectsCommand({ Bucket: bucket(), Delete: { Objects: doomed.map((Key) => ({ Key })) } }),
+        s3Call(),
+      );
+      n += doomed.length;
+    }
+    token = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (token);
+  if (n) forgetRunInBucket(runId);
   return n;
 }
 

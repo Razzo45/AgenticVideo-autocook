@@ -65,7 +65,7 @@ export async function withSharedAdmission<T>(
   const ceiling =
     lane === "files"
       ? Number(process.env.GEMINI_FILES_CONCURRENCY) || 2
-      : Number(process.env.GEMINI_CONCURRENCY) || 2;
+      : Number(process.env.GEMINI_CONCURRENCY) || 4;
   const maxActive = Math.max(1, Math.min(ceiling, options.maxActive ?? ceiling));
   const maxBackground = lane === "files" ? maxActive : Math.max(1, maxActive - 1);
   const intervalMs = Math.max(0, options.intervalMs ?? 0);

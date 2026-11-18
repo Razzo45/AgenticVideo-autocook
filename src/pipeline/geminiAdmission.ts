@@ -6,8 +6,8 @@
  * calls may be in flight* so 2 parallel cooks cannot 429-storm the shared key.
  *
  * Defaults (vs GDP text grading ceilings of 16–96):
- *   floor 1 · ceiling 2 · initial 1 · ownerCeiling 1 · filesCeiling 2
- * Lanes: brain (text), image, omni (video), files
+ *   floor 1 · ceiling 4 · initial 3 · ownerCeiling 1 · filesCeiling 2
+ * Lanes: brain (text), image, omni (video), audio (TTS / Lyria), files
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
@@ -20,7 +20,15 @@ import {
 import { throttleSharedAdmission, withSharedAdmission } from "./sharedAdmission";
 import { isCancelledError, isPlatformFaultError } from "./runControl";
 
-export type GeminiLane = "brain" | "image" | "omni" | "files";
+export type GeminiLane = "brain" | "image" | "omni" | "audio" | "files";
+
+/**
+ * Calls in flight on the one key, across brain + image + video + audio.
+ * A task writes its planned files side by side, so the old ceiling of 2 (start 1)
+ * made every file wait for the one before it. AIMD still halves this on a 429.
+ */
+export const DEFAULT_GEMINI_CONCURRENCY = 4;
+export const DEFAULT_GEMINI_INITIAL = 3;
 
 export type { AdmissionSnapshot, RequestClass };
 
@@ -34,8 +42,8 @@ function admission(): AdaptiveAdmission {
   if (!controller) {
     controller = new AdaptiveAdmission({
       floor: Math.max(1, Number(process.env.GEMINI_CONCURRENCY_FLOOR) || 1),
-      ceiling: Math.max(1, Number(process.env.GEMINI_CONCURRENCY) || 2),
-      initial: Math.max(1, Number(process.env.GEMINI_CONCURRENCY_INITIAL) || 1),
+      ceiling: Math.max(1, Number(process.env.GEMINI_CONCURRENCY) || DEFAULT_GEMINI_CONCURRENCY),
+      initial: Math.max(1, Number(process.env.GEMINI_CONCURRENCY_INITIAL) || DEFAULT_GEMINI_INITIAL),
       ownerCeiling: Math.max(1, Number(process.env.GEMINI_OWNER_CONCURRENCY) || 1),
       filesCeiling: Math.max(1, Number(process.env.GEMINI_FILES_CONCURRENCY) || 2),
       increaseAfter: Math.max(2, Number(process.env.GEMINI_INCREASE_AFTER) || 4),

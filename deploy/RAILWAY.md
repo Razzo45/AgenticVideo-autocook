@@ -29,7 +29,12 @@ Web and worker must ship this revision together. New cooks enqueue `task_plan` /
   - `S3_SECRET_ACCESS_KEY=${{autocook.SECRET_ACCESS_KEY}}`
 - `S3_FORCE_PATH_STYLE=0` — Railway buckets use virtual-hosted URLs (set `1` only for path-style providers)
 - `RUNS_DIR` — optional local mirror path (default `/app/runs` or `./runs`)
-- `GEMINI_CONCURRENCY=2`, `GEMINI_FILES_CONCURRENCY=2`, `GEMINI_OWNER_CONCURRENCY=1`
+- `GEMINI_FILES_CONCURRENCY=2`, `GEMINI_OWNER_CONCURRENCY=1`
+- `GEMINI_CONCURRENCY=4`, `GEMINI_CONCURRENCY_INITIAL=3` — calls in flight on the one key (brain + image + video + audio). Defaults shown. AIMD halves on a 429.
+- `GEMINI_OMNI_CONCURRENCY=2` — video clips in flight
+- `TASK_SLICE_CONCURRENCY=3` — planned files of one task written side by side
+- `HYGIENE_INTERVAL_MS` — default 5 min; the sweep runs beside the claim loop
+- `BRAIN_CALL_TIMEOUT_MS` (12 min), `TTS_TIMEOUT_MS` (5 min), `MUSIC_TIMEOUT_MS` (10 min), `S3_CALL_TIMEOUT_MS` (30 s)
 - `STAGING_IDLE_MS` — default 5h; purge plates/shots after finished + idle
 - `RUN_TTL_MS` — default 24h; delete entire run (including download)
 

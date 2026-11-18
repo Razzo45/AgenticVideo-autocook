@@ -10,6 +10,17 @@
 
 /** Inferred from live generation: brain rounds with tools/thinking often 2–6m; Carbon HTML can sit longer. */
 export const BRAIN_ROUND_TIMEOUT_MS = Number(process.env.BRAIN_ROUND_TIMEOUT_MS) || 13 * 60_000;
+/**
+ * One JSON deliverable call. Gemini bounds a unary request at 10 minutes on its side,
+ * so a reply cannot arrive after that. Past this the call is failed, not waited on forever.
+ */
+export const BRAIN_CALL_TIMEOUT_MS = Number(process.env.BRAIN_CALL_TIMEOUT_MS) || 12 * 60_000;
+/** One TTS cue. */
+export const TTS_TIMEOUT_MS = Number(process.env.TTS_TIMEOUT_MS) || 5 * 60_000;
+/** One Lyria track. */
+export const MUSIC_TIMEOUT_MS = Number(process.env.MUSIC_TIMEOUT_MS) || 10 * 60_000;
+/** One S3 list / delete / head round trip. */
+export const S3_CALL_TIMEOUT_MS = Number(process.env.S3_CALL_TIMEOUT_MS) || 30_000;
 /** Image model can sit before first byte; keep below orphan window. */
 export const IMAGE_GEN_TIMEOUT_MS = Number(process.env.IMAGE_GEN_TIMEOUT_MS) || 5 * 60_000;
 /** Omni submit (also used as fallback if geminiOmni local const missing). */
@@ -59,8 +70,13 @@ export function beginRunControl(runId: string): AbortSignal {
   return controller.signal;
 }
 
+/**
+ * Admission owners are `runId` or `runId:part` (one per parallel file or media slot).
+ * Both must reach the run's abort signal, or Cancel/Delete cannot stop that part.
+ */
 export function getRunSignal(runId: string): AbortSignal | undefined {
-  return byRun.get(runId)?.controller.signal;
+  const entry = byRun.get(runId) ?? byRun.get(runId.split(":")[0] ?? runId);
+  return entry?.controller.signal;
 }
 
 export function isRunCancelled(runId: string): boolean {
