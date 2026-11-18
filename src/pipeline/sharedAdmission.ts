@@ -67,7 +67,9 @@ export async function withSharedAdmission<T>(
       ? Number(process.env.GEMINI_FILES_CONCURRENCY) || 2
       : Number(process.env.GEMINI_CONCURRENCY) || 4;
   const maxActive = Math.max(1, Math.min(ceiling, options.maxActive ?? ceiling));
-  const maxBackground = lane === "files" ? maxActive : Math.max(1, maxActive - 1);
+  // Every Autocook call is background work. Holding one slot back for an interactive
+  // caller that never comes meant a target of 3 only ever ran 2 calls.
+  const maxBackground = maxActive;
   const intervalMs = Math.max(0, options.intervalMs ?? 0);
   const leaseSeconds = 180;
   const token = randomUUID();
