@@ -3,11 +3,11 @@
  * only the pictures, clips, and audio that reply names.
  */
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import JSZip from "jszip";
+import PptxGenJS from "pptxgenjs";
 import { z } from "zod";
 import { executeMediaTool, type MediaToolContext } from "../autocook/mediaTools";
 import { exportPdf } from "../autocook/exportPdf";
@@ -16,6 +16,8 @@ import type { BrainLabel } from "./brainChoice";
 import { generateLyriaMusic, generateSpeechTts } from "./geminiAudio";
 import { assertInlinable, expandInlineFiles, inlineNames, lookupInlineFile } from "./inlineFiles";
 import { stage } from "./stageLog";
+import { convertImage, extensionFor as imageExtension, formatForFilename, sniffImage } from "./mediaFormat";
+import { embeddingAllowed, toEot } from "./eot";
 
 const execFileAsync = promisify(execFile);
 const EMU_PER_INCH = 914400;
@@ -980,11 +982,23 @@ async function emitDocument(
   if (item.kind === "pptx") return writePptx(item, slots, outDir, filesByName);
   if (item.kind === "html") return writeHtml(item, slots, outDir, filesByName);
   if (item.kind === "svg") {
+    const svg = expandInlineFiles(item.svg ?? "", filesByName);
+    const named = formatForFilename(item.filename);
+    if (named && named !== "svg") {
+      // kind "svg" with a raster filename contradicts itself. The platform does not pick
+      // a winner: the SVG is written under the name the brain gave, as the brain wrote it.
+      console.warn(`[build] ${item.filename}: kind is svg but the name says ${named} — written as given`);
+    }
     const dest = uniqueDest(outDir, item.filename, ".svg");
-    fs.writeFileSync(dest, expandInlineFiles(item.svg ?? "", filesByName), "utf8");
+    fs.writeFileSync(dest, svg, "utf8");
     return { id: item.id, filename: path.basename(dest), absPath: dest };
   }
-  if (item.kind === "image" || item.kind === "video" || item.kind === "audio") {
+  if (item.kind === "image") {
+    const abs = await slots.get("file");
+    if (!abs) throw new Error(`${item.filename}: file was not produced`);
+    return writeImageFile(item, abs, outDir);
+  }
+  if (item.kind === "video" || item.kind === "audio") {
     const abs = await slots.get("file");
     if (!abs) throw new Error(`${item.filename}: file was not produced`);
     const dest = uniqueDest(outDir, item.filename, path.extname(abs) || extFallback(item.kind));
@@ -992,6 +1006,30 @@ async function emitDocument(
     return { id: item.id, filename: path.basename(dest), absPath: dest };
   }
   throw new Error(`${item.filename}: unsupported kind ${item.kind}`);
+}
+
+/**
+ * kind "image": the brain asked for a picture file under this name, from a source it
+ * chose (place / generate / svg). Writing that file in the format its name declares is
+ * part of building it, like printing HTML to a PDF. The size is the one the brain gave
+ * (on the deliverable or in its SVG); the platform does not pick one.
+ *
+ * What cannot be made is not corrected: a photo named .svg is written as given.
+ */
+async function writeImageFile(item: CompositionDeliverable, src: string, outDir: string): Promise<BuiltFile> {
+  const actual = sniffImage(fs.readFileSync(src));
+  const wanted = formatForFilename(item.filename);
+  const size = item.width && item.height ? { width: item.width, height: item.height } : {};
+  const dest = uniqueDest(outDir, item.filename, actual ? imageExtension(actual) : ".png");
+  if (wanted && wanted !== "svg") {
+    await convertImage(src, dest, wanted, size);
+  } else {
+    if (wanted === "svg" && actual && actual !== "svg") {
+      console.warn(`[build] ${item.filename}: the picture is ${actual}, not svg — written as given`);
+    }
+    fs.copyFileSync(src, dest);
+  }
+  return { id: item.id, filename: path.basename(dest), absPath: dest };
 }
 
 async function emitPdf(
@@ -1049,7 +1087,7 @@ async function writeHtml(
   const zip = new JSZip();
   for (const abs of written) {
     const rel = path.relative(folder, abs).replace(/\\/g, "/");
-    zip.file(rel, fs.readFileSync(abs));
+    zip.file(rel, fs.readFileSync(abs), { createFolders: false });
   }
   fs.writeFileSync(dest, await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
   return { id: item.id, filename: path.basename(dest), absPath: dest, printPath };
@@ -1099,14 +1137,7 @@ function substituteAssets(
   return out;
 }
 
-function latinTypeface(font: string | undefined): string {
-  if (!font?.trim()) return "";
-  return `<a:latin typeface="${escXml(font.trim())}"/>`;
-}
-
 type FontFace = { family: string; subfamily: string; abs: string; bytes: Buffer };
-type EmbeddedFile = { guid: string; rId: string; bytes: Buffer; slot: "regular" | "bold" | "italic" | "boldItalic" };
-type EmbeddedFamily = { typeface: string; files: EmbeddedFile[] };
 
 function typefacesIn(item: CompositionDeliverable): string[] {
   const used = new Map<string, string>();
@@ -1123,60 +1154,6 @@ function typefacesIn(item: CompositionDeliverable): string[] {
   return [...used.values()];
 }
 
-function embedNamedFonts(typefaces: string[], filesByName: Map<string, string> | undefined, firstRid: number): EmbeddedFamily[] {
-  const faces = readAttachedFaces(filesByName);
-  if (!faces.length || !typefaces.length) return [];
-  let nextRid = firstRid;
-  const embedded: EmbeddedFamily[] = [];
-  for (const typeface of typefaces) {
-    const matches = faces.filter((face) => faceMatches(face, typeface));
-    if (!matches.length) continue;
-    const chosen = new Map<EmbeddedFile["slot"], FontFace>();
-    for (const face of matches) {
-      const { slot, rank } = fontSlot(face.subfamily);
-      const current = chosen.get(slot);
-      if (!current || rank > fontSlot(current.subfamily).rank) chosen.set(slot, face);
-    }
-    if (!chosen.has("regular")) {
-      const fallback = matches.find((face) => fontSlot(face.subfamily).slot === "bold") ?? matches[0]!;
-      chosen.set("regular", fallback);
-    }
-    const byPath = new Map<string, EmbeddedFile>();
-    const files: EmbeddedFile[] = [];
-    for (const slot of ["regular", "bold", "italic", "boldItalic"] as const) {
-      const face = chosen.get(slot);
-      if (!face) continue;
-      let file = byPath.get(face.abs);
-      if (!file) {
-        const guid = randomUUID();
-        file = { guid, rId: `rId${nextRid}`, bytes: obfuscateFont(face.bytes, guid), slot };
-        nextRid += 1;
-        byPath.set(face.abs, file);
-        files.push(file);
-      }
-      if (file.slot !== slot) files.push({ ...file, slot });
-    }
-    embedded.push({ typeface, files });
-  }
-  return embedded;
-}
-
-function embeddedFontListXml(embedded: EmbeddedFamily[]): string {
-  if (!embedded.length) return "";
-  const items = embedded
-    .map((face) => {
-      const styles = ["regular", "bold", "italic", "boldItalic"]
-        .map((slot) => {
-          const file = face.files.find((item) => item.slot === slot);
-          return file ? `<p:${slot} r:id="${file.rId}"/>` : "";
-        })
-        .join("");
-      return `<p:embeddedFont><p:font typeface="${escXml(face.typeface)}"/>${styles}</p:embeddedFont>`;
-    })
-    .join("");
-  return `<p:embeddedFontLst>${items}</p:embeddedFontLst>`;
-}
-
 function faceMatches(face: FontFace, requested: string): boolean {
   const want = requested.trim().toLowerCase();
   const family = face.family.toLowerCase();
@@ -1185,7 +1162,7 @@ function faceMatches(face: FontFace, requested: string): boolean {
   return want === family || want === full || want === stem || want.replace(/[-_]+/g, " ") === stem.replace(/[-_]+/g, " ");
 }
 
-function fontSlot(subfamily: string): { slot: EmbeddedFile["slot"]; rank: number } {
+function fontSlot(subfamily: string): { slot: "regular" | "bold" | "italic" | "boldItalic"; rank: number } {
   const name = subfamily.toLowerCase();
   const italic = /italic|oblique/.test(name);
   const heavy = /\b(bold|black|heavy)\b/.test(name) && !/semi|demi/.test(name);
@@ -1259,30 +1236,23 @@ function decodeUtf16BE(buf: Buffer): string {
   return text;
 }
 
-function obfuscateFont(bytes: Buffer, guid: string): Buffer {
-  const key = guidBytes(guid);
-  const out = Buffer.from(bytes);
-  const n = Math.min(32, out.length);
-  for (let i = 0; i < n; i++) out[i] = out[i]! ^ key[i % 16]!;
-  return out;
+/** Embed attached fonts in decks. Off until a deck with embedded EOT has been opened in PowerPoint. */
+export function pptxEmbedFonts(): boolean {
+  const raw = (process.env.PPTX_EMBED_FONTS ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on";
 }
 
-function guidBytes(guid: string): Buffer {
-  const raw = Buffer.from(guid.replace(/-/g, ""), "hex");
-  if (raw.length !== 16) throw new Error(`Bad font id ${guid}`);
-  const out = Buffer.alloc(16);
-  out[0] = raw[3]!;
-  out[1] = raw[2]!;
-  out[2] = raw[1]!;
-  out[3] = raw[0]!;
-  out[4] = raw[5]!;
-  out[5] = raw[4]!;
-  out[6] = raw[7]!;
-  out[7] = raw[6]!;
-  raw.copy(out, 8, 8, 16);
-  return out;
-}
+const PRESENTATION_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
+/**
+ * The brain's slide IR as a PowerPoint deck.
+ *
+ * The package is written by pptxgenjs, which gives PowerPoint the parts it requires
+ * (theme, slide master, slide layout, notes master, presentation properties). The
+ * hand-built package had none of them, and its bold flag was not valid DrawingML,
+ * so PowerPoint offered to repair every deck. Pictures are packed as PNG or JPEG
+ * by their real bytes; an SVG is drawn to pixels first.
+ */
 async function writePptx(
   item: CompositionDeliverable,
   slots: Map<string, Promise<string>>,
@@ -1290,360 +1260,168 @@ async function writePptx(
   filesByName?: Map<string, string>,
 ): Promise<BuiltFile> {
   const slides = item.slides ?? [];
-  const slideW = Math.round((item.width_in ?? 13.333) * EMU_PER_INCH);
-  const slideH = Math.round((item.height_in ?? 7.5) * EMU_PER_INCH);
-  const zip = new JSZip();
-  const noteSlides = slides.flatMap((slide, index) => (slide.notes?.trim() ? [index + 1] : []));
-  const embedded = embedNamedFonts(typefacesIn(item), filesByName, slides.length + 2);
-  zip.file("[Content_Types].xml", contentTypes(slides.length, noteSlides, embedded.length > 0));
-  zip.folder("_rels")!.file(
-    ".rels",
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
-</Relationships>`,
-  );
-  const ppt = zip.folder("ppt")!;
-  const sldIdLst = slides.map((_, i) => `<p:sldId id="${256 + i}" r:id="rId${i + 2}"/>`).join("");
-  ppt.file(
-    "presentation.xml",
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
- xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
- xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" saveSubsetFonts="1">
-  <p:sldMasterIdLst/>
-  <p:sldIdLst>${sldIdLst}</p:sldIdLst>
-  <p:sldSz cx="${slideW}" cy="${slideH}"/>
-  <p:notesSz cx="6858000" cy="9144000"/>
-  ${embeddedFontListXml(embedded)}
-</p:presentation>`,
-  );
-  const fontFiles = [...new Map(embedded.flatMap((face) => face.files).map((file) => [file.rId, file])).values()];
-  if (fontFiles.length) {
-    const fontFolder = ppt.folder("fonts")!;
-    for (const file of fontFiles) fontFolder.file(`${file.guid}.fntdata`, file.bytes);
-  }
-  ppt.folder("_rels")!.file(
-    "presentation.xml.rels",
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-${slides
-  .map(
-    (_, i) =>
-      `<Relationship Id="rId${i + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${i + 1}.xml"/>`,
-  )
-  .join("\n")}
-${fontFiles
-  .map(
-    (file) =>
-      `<Relationship Id="${file.rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/${file.guid}.fntdata"/>`,
-  )
-  .join("\n")}
-</Relationships>`,
-  );
-  if (noteSlides.length) {
-    ppt.folder("notesMasters")!.file("notesMaster1.xml", notesMasterXml());
-  }
-  const slidesFolder = ppt.folder("slides")!;
-  const relFolder = slidesFolder.folder("_rels")!;
-  const mediaFolder = ppt.folder("media")!;
+  const widthIn = item.width_in ?? 13.333;
+  const heightIn = item.height_in ?? 7.5;
+  const pres = new PptxGenJS();
+  pres.defineLayout({ name: "AUTOCOOK", width: widthIn, height: heightIn });
+  pres.layout = "AUTOCOOK";
+  if (item.font?.trim()) pres.theme = { headFontFace: item.font.trim(), bodyFontFace: item.font.trim() };
+
+  const mediaDir = path.join(outDir, ".pptx_media");
+  const inches = (pct: number | undefined, fallback: number, total: number) =>
+    (Math.min(100, Math.max(0, pct ?? fallback)) / 100) * total;
   let mediaIndex = 0;
+
   for (let i = 0; i < slides.length; i++) {
     const slide = slides[i]!;
-    const rels: string[] = [];
-    const images: Array<{ rId: string; abs: string }> = [];
+    const page = pres.addSlide();
+    const bg = hex6(slide.background, "");
+    if (bg) page.background = { color: bg };
     for (let e = 0; e < slide.elements.length; e++) {
       const el = slide.elements[e]!;
-      if (el.type !== "image" || !el.source) continue;
-      const abs = await slots.get(`s${i}e${e}`);
-      if (!abs) throw new Error(`${item.filename} slide ${i + 1}: image was not produced`);
-      mediaIndex += 1;
-      const packed = await packImage(abs, path.join(outDir, ".pptx_media"), `${item.id}-${mediaIndex}`);
-      const name = `image${mediaIndex}.${packed.ext}`;
-      mediaFolder.file(name, fs.readFileSync(packed.abs));
-      const rId = `rId${rels.length + 1}`;
-      images.push({ rId, abs: packed.abs });
-      rels.push(
-        `<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${name}"/>`,
-      );
+      const box = {
+        x: inches(el.x, 5, widthIn),
+        y: inches(el.y, 5, heightIn),
+        w: Math.max(0.01, inches(el.w, el.type === "text" ? 90 : 40, widthIn)),
+        h: Math.max(0.01, inches(el.h, 20, heightIn)),
+      };
+      if (el.type === "image") {
+        if (!el.source) continue;
+        const abs = await slots.get(`s${i}e${e}`);
+        if (!abs) throw new Error(`${item.filename} slide ${i + 1}: image was not produced`);
+        mediaIndex += 1;
+        const packed = await packDeckImage(abs, mediaDir, `${safeId(item.id)}-${mediaIndex}`);
+        page.addImage({ path: packed, ...box });
+        continue;
+      }
+      if (el.type === "shape") {
+        const fill = hex6(el.fill, "");
+        page.addShape(pres.ShapeType.rect, {
+          ...box,
+          fill: fill ? { color: fill } : { type: "none" },
+          line: { type: "none" },
+        });
+        continue;
+      }
+      const font = (el.font || slide.font || item.font || "").trim();
+      page.addText(el.text ?? "", {
+        ...box,
+        isTextBox: true,
+        valign: "top",
+        fontSize: Math.min(96, Math.max(8, Math.round(el.size ?? (el.bold ? 28 : 16)))),
+        bold: Boolean(el.bold),
+        color: hex6(el.color, "111111"),
+        align: el.align === "center" ? "center" : el.align === "right" ? "right" : "left",
+        ...(font ? { fontFace: font } : {}),
+      });
     }
-    let notesRid = "";
-    if (slide.notes?.trim()) {
-      notesRid = `rId${rels.length + 1}`;
-      rels.push(
-        `<Relationship Id="${notesRid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide${i + 1}.xml"/>`,
-      );
-      const notesFolder = ppt.folder("notesSlides")!;
-      notesFolder.file(`notesSlide${i + 1}.xml`, notesSlideXml(slide.notes, slide.font || item.font));
-      notesFolder.folder("_rels")!.file(
-        `notesSlide${i + 1}.xml.rels`,
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster" Target="../notesMasters/notesMaster1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="../slides/slide${i + 1}.xml"/>
-</Relationships>`,
-      );
-    }
-    slidesFolder.file(`slide${i + 1}.xml`, slideXml(slide, slideW, slideH, images.map((image) => image.rId), item.font));
-    relFolder.file(
-      `slide${i + 1}.xml.rels`,
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-${rels.join("\n")}
-</Relationships>`,
-    );
+    if (slide.notes?.trim()) page.addNotes(slide.notes);
   }
+
+  let bytes = (await pres.write({ outputType: "nodebuffer" })) as Buffer;
+  if (pptxEmbedFonts()) bytes = await embedDeckFonts(bytes, typefacesIn(item), filesByName);
+  bytes = await withoutFolderEntries(bytes);
   const dest = uniqueDest(outDir, item.filename, ".pptx");
-  fs.writeFileSync(dest, await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
+  fs.writeFileSync(dest, bytes);
   return { id: item.id, filename: path.basename(dest), absPath: dest };
 }
 
-function slideXml(
-  slide: z.infer<typeof slideSchema>,
-  slideW: number,
-  slideH: number,
-  imageRids: string[],
-  deckFont?: string,
-): string {
-  const shapes: string[] = [];
-  let shapeId = 2;
-  let imageCursor = 0;
-  const bg = hex6(slide.background, "FFFFFF");
-  for (const el of slide.elements) {
-    const box = pctBox(slideW, slideH, el.x ?? 5, el.y ?? 5, el.w ?? (el.type === "text" ? 90 : 40), el.h ?? 20);
-    if (el.type === "image") {
-      const rId = imageRids[imageCursor];
-      imageCursor += 1;
-      if (rId) {
-        shapes.push(`<p:pic>
-        <p:nvPicPr>
-          <p:cNvPr id="${shapeId}" name="Picture ${shapeId}"/>
-          <p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>
-          <p:nvPr/>
-        </p:nvPicPr>
-        <p:blipFill>
-          <a:blip r:embed="${rId}"/>
-          <a:stretch><a:fillRect/></a:stretch>
-        </p:blipFill>
-        <p:spPr>
-          <a:xfrm><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.cx}" cy="${box.cy}"/></a:xfrm>
-          <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
-        </p:spPr>
-      </p:pic>`);
-      }
-      shapeId += 1;
+/** PNG or JPEG by the real bytes, so the part's content type matches what is in it. */
+async function packDeckImage(src: string, dir: string, id: string): Promise<string> {
+  const actual = sniffImage(fs.readFileSync(src));
+  if (actual === "png" || actual === "jpeg") return src;
+  const dest = path.join(dir, `${id}.png`);
+  await convertImage(src, dest, "png");
+  return dest;
+}
+
+/**
+ * Add the attached faces the deck names, as EOT (.fntdata), to a written deck.
+ * Families with no attached file are left to the viewer's installed fonts.
+ */
+async function embedDeckFonts(
+  deck: Buffer,
+  typefaces: string[],
+  filesByName: Map<string, string> | undefined,
+): Promise<Buffer> {
+  const faces = readAttachedFaces(filesByName);
+  if (!faces.length || !typefaces.length) return deck;
+  const zip = await JSZip.loadAsync(deck);
+  const presentationFile = zip.file("ppt/presentation.xml");
+  const relsFile = zip.file("ppt/_rels/presentation.xml.rels");
+  const typesFile = zip.file("[Content_Types].xml");
+  if (!presentationFile || !relsFile || !typesFile) return deck;
+  let presentation = await presentationFile.async("string");
+  let rels = await relsFile.async("string");
+  let types = await typesFile.async("string");
+
+  const usedIds = new Set([...rels.matchAll(/Id="rId(\d+)"/g)].map((m) => Number(m[1])));
+  let nextId = Math.max(0, ...usedIds) + 1;
+  const entries: string[] = [];
+  const newRels: string[] = [];
+  let fontIndex = 0;
+  for (const typeface of typefaces) {
+    const matches = faces.filter((face) => faceMatches(face, typeface));
+    if (!matches.length) continue;
+    if (!matches.every((face) => embeddingAllowed(face.bytes))) {
+      console.warn(`[build] ${typeface}: the font's licence does not allow embedding — left to installed fonts`);
       continue;
     }
-    const fill = hex6(el.fill, "");
-    const solid = el.type === "shape" && fill ? `<a:solidFill><a:srgbClr val="${fill}"/></a:solidFill>` : `<a:noFill/>`;
-    const color = hex6(el.color, "111111");
-    const size = Math.min(96, Math.max(8, Math.round(el.size ?? (el.bold ? 28 : 16))));
-    const align = el.align === "center" ? "ctr" : el.align === "right" ? "r" : "l";
-    const bold = el.bold ? "<a:b/>" : "";
-    const latin = latinTypeface(el.font || slide.font || deckFont);
-    const paragraphs = (el.text ?? "").split(/\n/).map((line) => `<a:p><a:pPr algn="${align}"/><a:r><a:rPr lang="en-US" sz="${size * 100}" dirty="0">${bold}<a:solidFill><a:srgbClr val="${color}"/></a:solidFill>${latin}</a:rPr><a:t>${escXml(line)}</a:t></a:r></a:p>`).join("");
-    shapes.push(`<p:sp>
-        <p:nvSpPr>
-          <p:cNvPr id="${shapeId}" name="Shape ${shapeId}"/>
-          <p:cNvSpPr txBox="1"/>
-          <p:nvPr/>
-        </p:nvSpPr>
-        <p:spPr>
-          <a:xfrm><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.cx}" cy="${box.cy}"/></a:xfrm>
-          <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
-          ${solid}
-        </p:spPr>
-        <p:txBody>
-          <a:bodyPr wrap="square" lIns="91440" tIns="45720" rIns="91440" bIns="45720"/>
-          <a:lstStyle/>
-          ${paragraphs || `<a:p><a:endParaRPr lang="en-US"/></a:p>`}
-        </p:txBody>
-      </p:sp>`);
-    shapeId += 1;
-  }
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-  <p:cSld>
-    <p:bg><p:bgPr><a:solidFill><a:srgbClr val="${bg}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>
-    <p:spTree>
-      <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
-      <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
-      ${shapes.join("\n")}
-    </p:spTree>
-  </p:cSld>
-  <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
-</p:sld>`;
-}
-
-function notesSlideXml(notes: string, font?: string): string {
-  const latin = latinTypeface(font);
-  const paragraphs = notes.split(/\n/).map((line) => `<a:p><a:r><a:rPr lang="en-US" sz="1200" dirty="0">${latin}</a:rPr><a:t>${escXml(line)}</a:t></a:r></a:p>`).join("");
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-  <p:cSld>
-    <p:spTree>
-      <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
-      <p:grpSpPr/>
-      <p:sp>
-        <p:nvSpPr><p:cNvPr id="2" name="Notes"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr>
-        <p:spPr/>
-        <p:txBody><a:bodyPr/><a:lstStyle/>${paragraphs}</p:txBody>
-      </p:sp>
-    </p:spTree>
-  </p:cSld>
-</p:notes>`;
-}
-
-function notesMasterXml(): string {
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:notesMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-  <p:cSld>
-    <p:spTree>
-      <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
-      <p:grpSpPr/>
-    </p:spTree>
-  </p:cSld>
-  <p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>
-</p:notesMaster>`;
-}
-
-function contentTypes(slideCount: number, noteSlides: number[], fonts = false): string {
-  const slides = Array.from({ length: slideCount }, (_, i) => `<Override PartName="/ppt/slides/slide${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`).join("");
-  const noteParts = noteSlides
-    .map((n) => `<Override PartName="/ppt/notesSlides/notesSlide${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>`)
-    .join("");
-  const noteMaster = noteSlides.length
-    ? `<Override PartName="/ppt/notesMasters/notesMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml"/>`
-    : "";
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Default Extension="png" ContentType="image/png"/>
-  <Default Extension="jpeg" ContentType="image/jpeg"/>
-  <Default Extension="svg" ContentType="image/svg+xml"/>
-  ${fonts ? `<Default Extension="fntdata" ContentType="application/x-fontdata"/>` : ""}
-  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
-  ${slides}
-  ${noteMaster}
-  ${noteParts}
-</Types>`;
-}
-
-async function packImage(src: string, dir: string, id: string): Promise<{ abs: string; ext: "png" | "jpeg" | "svg" }> {
-  const ext = path.extname(src).toLowerCase();
-  if (ext === ".png") return { abs: src, ext: "png" };
-  if (ext === ".jpg" || ext === ".jpeg") return { abs: src, ext: "jpeg" };
-  fs.mkdirSync(dir, { recursive: true });
-  const dest = path.join(dir, `${safeId(id)}.png`);
-  if (ext === ".svg") {
-    if (await rasterizeSvg(src, dest)) return { abs: dest, ext: "png" };
-    return { abs: src, ext: "svg" };
-  }
-  await ffmpeg(["-i", src, "-frames:v", "1", dest]);
-  return { abs: dest, ext: "png" };
-}
-
-async function rasterizeSvg(src: string, dest: string): Promise<boolean> {
-  try {
-    await ffmpeg(["-i", src, "-frames:v", "1", dest]);
-    if (fs.existsSync(dest) && fs.statSync(dest).size > 0) return true;
-  } catch {
-    /* This ffmpeg build has no SVG decoder. */
-  }
-  fs.rmSync(dest, { force: true });
-  const size = svgPixelSize(fs.readFileSync(src, "utf8"));
-  const fileUrl = `file:///${src.replace(/\\/g, "/")}`;
-  for (const bin of chromeBins()) {
-    try {
-      await execFileAsync(bin, [
-        "--headless=new",
-        "--disable-gpu",
-        "--hide-scrollbars",
-        "--no-sandbox",
-        `--window-size=${size.width},${size.height}`,
-        `--screenshot=${dest}`,
-        fileUrl,
-      ], { timeout: 60_000, windowsHide: true });
-    } catch {
-      /* try the next browser */
+    const chosen = new Map<"regular" | "bold" | "italic" | "boldItalic", FontFace>();
+    for (const face of matches) {
+      const { slot, rank } = fontSlot(face.subfamily);
+      const current = chosen.get(slot);
+      if (!current || rank > fontSlot(current.subfamily).rank) chosen.set(slot, face);
     }
-    if (fs.existsSync(dest) && fs.statSync(dest).size > 32) return true;
-    fs.rmSync(dest, { force: true });
-  }
-  const dir = path.dirname(dest);
-  const staged = path.join(dir, `${path.basename(dest, ".png")}.svg`);
-  if (path.resolve(staged) !== path.resolve(src)) fs.copyFileSync(src, staged);
-  for (const bin of officeBins()) {
-    try {
-      await execFileAsync(bin, [
-        "--headless",
-        "--nologo",
-        "--nofirststartwizard",
-        "--convert-to",
-        "png",
-        "--outdir",
-        dir,
-        staged,
-      ], { timeout: 120_000, windowsHide: true });
-    } catch {
-      /* try the next LibreOffice */
+    if (!chosen.has("regular")) chosen.set("regular", matches.find((f) => fontSlot(f.subfamily).slot === "bold") ?? matches[0]!);
+    const byPath = new Map<string, string>();
+    const styles: string[] = [];
+    for (const slot of ["regular", "bold", "italic", "boldItalic"] as const) {
+      const face = chosen.get(slot);
+      if (!face) continue;
+      let rId = byPath.get(face.abs);
+      if (!rId) {
+        rId = `rId${nextId++}`;
+        fontIndex += 1;
+        const part = `fonts/font${fontIndex}.fntdata`;
+        zip.file(`ppt/${part}`, toEot(face.bytes));
+        newRels.push(`<Relationship Id="${rId}" Type="${PRESENTATION_NS}/font" Target="${part}"/>`);
+        byPath.set(face.abs, rId);
+      }
+      styles.push(`<p:${slot} r:id="${rId}"/>`);
     }
-    if (fs.existsSync(dest) && fs.statSync(dest).size > 32) {
-      if (path.resolve(staged) !== path.resolve(src)) fs.rmSync(staged, { force: true });
-      return true;
-    }
+    entries.push(`<p:embeddedFont><p:font typeface="${escXml(typeface)}"/>${styles.join("")}</p:embeddedFont>`);
   }
-  if (path.resolve(staged) !== path.resolve(src)) fs.rmSync(staged, { force: true });
-  return false;
-}
-
-function svgPixelSize(svg: string): { width: number; height: number } {
-  const width = Number(svg.match(/\bwidth="([\d.]+)/)?.[1]);
-  const height = Number(svg.match(/\bheight="([\d.]+)/)?.[1]);
-  const viewBox = svg.match(/\bviewBox="\s*[\d.-]+\s+[\d.-]+\s+([\d.]+)\s+([\d.]+)/);
-  const w = Math.round(width || Number(viewBox?.[1]) || 256);
-  const h = Math.round(height || Number(viewBox?.[2]) || 256);
-  return {
-    width: Math.min(2048, Math.max(16, w)),
-    height: Math.min(2048, Math.max(16, h)),
-  };
-}
-
-function officeBins(): string[] {
-  return existingBins([
-    process.env.LIBREOFFICE_BIN,
-    process.env.SOFFICE_BIN,
-    "soffice",
-    "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
-    "C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe",
-    "/usr/bin/soffice",
-    "/usr/lib/libreoffice/program/soffice",
-  ]);
-}
-
-function chromeBins(): string[] {
-  return existingBins([
-    process.env.CHROMIUM_BIN,
-    process.env.CHROME_BIN,
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-  ]);
-}
-
-function existingBins(candidates: Array<string | undefined>): string[] {
-  const bins: string[] = [];
-  for (const bin of candidates) {
-    if (!bin) continue;
-    if ((bin.includes("\\") || bin.includes("/")) && !fs.existsSync(bin)) continue;
-    bins.push(bin);
+  if (!entries.length) return deck;
+  const list = `<p:embeddedFontLst>${entries.join("")}</p:embeddedFontLst>`;
+  // Schema order: ... sldSz, notesSz, embeddedFontLst, ... defaultTextStyle
+  presentation = /<p:notesSz\b[^>]*\/>/.test(presentation)
+    ? presentation.replace(/(<p:notesSz\b[^>]*\/>)/, `$1${list}`)
+    : presentation.replace(/(<p:sldSz\b[^>]*\/>)/, `$1${list}`);
+  rels = rels.replace("</Relationships>", `${newRels.join("")}</Relationships>`);
+  if (!/Extension="fntdata"/.test(types)) {
+    types = types.replace("<Default ", `<Default Extension="fntdata" ContentType="application/x-fontdata"/><Default `);
   }
-  return bins;
+  zip.file("ppt/presentation.xml", presentation);
+  zip.file("ppt/_rels/presentation.xml.rels", rels);
+  zip.file("[Content_Types].xml", types);
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
+
+/**
+ * Rewrite a zip with file entries only. Directory entries make some cloud viewers and
+ * co-editing services refuse the file.
+ */
+export async function withoutFolderEntries(bytes: Buffer): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(bytes);
+  const dirs = Object.values(zip.files).filter((entry) => entry.dir);
+  if (!dirs.length) return bytes;
+  const out = new JSZip();
+  for (const entry of Object.values(zip.files)) {
+    if (entry.dir) continue;
+    out.file(entry.name, await entry.async("nodebuffer"), { createFolders: false, date: entry.date });
+  }
+  return out.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
 async function concatAudio(files: string[], dest: string): Promise<void> {
