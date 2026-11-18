@@ -5,7 +5,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { ThinkingLevel, type Part } from "@google/genai";
+import type { Part } from "@google/genai";
 import {
   MEDIA_TOOL_DECLARATIONS,
   executeMediaTool,
@@ -136,7 +136,6 @@ async function continueCutOffJson(opts: {
       userParts: [...opts.userParts, { text: prompt }],
       json: false,
       maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
-      thinkingLevel: ThinkingLevel.MINIMAL,
       onStatus: opts.onStatus,
       activity: `${opts.activity} continuing`,
     });
@@ -408,7 +407,6 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
         userParts,
         json: true,
         maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
-        thinkingLevel: ThinkingLevel.MINIMAL,
         onStatus: onBrainStatus,
         activity: sliceLabel,
       });
@@ -448,7 +446,6 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
           ],
           json: true,
           maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
-          thinkingLevel: ThinkingLevel.MINIMAL,
           onStatus: onBrainStatus,
           activity: `${sliceLabel} rebuilding`,
         });
