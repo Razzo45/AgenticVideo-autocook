@@ -16,9 +16,14 @@ import {
 import { BRAIN_MODEL } from "./constants";
 import { brainLabel } from "./brainChoice";
 import { currentGeminiOwnerId, withGeminiAdmission } from "./geminiAdmission";
+import { INTERRUPTED_FINISH } from "./deliverableReceive";
+import { logStage } from "./stageLog";
 import {
   BRAIN_CALL_TIMEOUT_MS,
   BRAIN_ROUND_TIMEOUT_MS,
+  BRAIN_STREAM_IDLE_MS,
+  BRAIN_STREAM_TIMEOUT_MS,
+  PlatformFaultError,
   getRunSignal,
   isCancelledError,
   isPlatformFaultError,
@@ -136,11 +141,128 @@ function flattenMessages(messages: BrainMessage[]): {
   return { system: systemBits.length ? systemBits.join("\n\n") : undefined, parts };
 }
 
+export type BrainUsage = {
+  promptTokenCount?: number;
+  candidatesTokenCount?: number;
+  thoughtsTokenCount?: number;
+  totalTokenCount?: number;
+};
+
 export type BrainText = {
   text: string;
-  /** Gemini finishReason. MAX_TOKENS means the reply stopped because the output budget ran out. */
+  /**
+   * Gemini finishReason. MAX_TOKENS means the reply stopped because the output budget ran out.
+   * INTERRUPTED means the stream dropped or stalled after text had arrived; the text is what arrived.
+   */
   finishReason?: string;
+  usage?: BrainUsage;
 };
+
+type StreamChunk = {
+  text?: string;
+  candidates?: Array<{ finishReason?: unknown }>;
+  usageMetadata?: BrainUsage;
+};
+
+/** Streaming is the default. BRAIN_STREAM=0 goes back to one unary request per call. */
+export function brainStreamEnabled(): boolean {
+  const raw = (process.env.BRAIN_STREAM ?? "").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off");
+}
+
+/**
+ * Receive one streamed reply.
+ *
+ * - Text is kept as it arrives. If the stream then drops, stalls, or runs out of
+ *   time, what arrived is returned with finishReason INTERRUPTED, so the caller
+ *   continues that text. It is not thrown away and written again.
+ * - Nothing arrived and the stream failed: the error is thrown (admission may retry).
+ * - The run was cancelled: the cancel reason is thrown.
+ */
+export async function consumeBrainStream(opts: {
+  open: (signal: AbortSignal) => Promise<AsyncIterable<StreamChunk>>;
+  label: string;
+  runSignal?: AbortSignal;
+  onStatus?: (msg: string) => void;
+  totalMs?: number;
+  idleMs?: number;
+  /** False: a broken stream is an error even when text arrived (the caller cannot continue it). */
+  keepPartial?: boolean;
+  /** Test hooks. */
+  tickMs?: number;
+  graceMs?: number;
+}): Promise<BrainText> {
+  const totalMs = opts.totalMs ?? BRAIN_STREAM_TIMEOUT_MS;
+  const idleMs = opts.idleMs ?? BRAIN_STREAM_IDLE_MS;
+  const cancelled = () =>
+    opts.runSignal?.reason instanceof Error ? opts.runSignal.reason : new PlatformFaultError(`${opts.label} aborted`);
+  if (opts.runSignal?.aborted) throw cancelled();
+
+  const ctl = new AbortController();
+  const started = Date.now();
+  let text = "";
+  let finish: string | undefined;
+  let usage: BrainUsage | undefined;
+  let lastChunk = started;
+  let lastBeat = started;
+  let stalled: string | null = null;
+  let hardStop: (err: Error) => void = () => undefined;
+  const stopped = new Promise<never>((_, reject) => {
+    hardStop = reject;
+  });
+  stopped.catch(() => undefined);
+  // The SDK should end the request on abort. If it does not, stop waiting anyway.
+  const giveUp = (why: string) => {
+    if (stalled) return;
+    stalled = why;
+    ctl.abort();
+    setTimeout(() => hardStop(new Error(why)), opts.graceMs ?? 15_000).unref?.();
+  };
+  const onRunAbort = () => giveUp("cancelled");
+  opts.runSignal?.addEventListener("abort", onRunAbort, { once: true });
+  const watchdog = setInterval(() => {
+    const now = Date.now();
+    if (now - started > totalMs) giveUp(`timed out after ${Math.round(totalMs / 1000)}s`);
+    else if (text && now - lastChunk > idleMs) giveUp(`stalled: no output for ${Math.round(idleMs / 1000)}s`);
+    else if (opts.onStatus && now - lastBeat >= 20_000) {
+      lastBeat = now;
+      const sec = Math.round((now - started) / 1000);
+      opts.onStatus(
+        text ? `${opts.label} (writing, ${text.length} characters, ${sec}s)…` : `${opts.label} (thinking, ${sec}s)…`,
+      );
+    }
+  }, opts.tickMs ?? 5_000);
+
+  const consume = async () => {
+    const stream = await opts.open(ctl.signal);
+    for await (const chunk of stream) {
+      lastChunk = Date.now();
+      const piece = chunk.text;
+      if (piece) text += piece;
+      const reason = chunk.candidates?.[0]?.finishReason;
+      if (reason) finish = String(reason);
+      if (chunk.usageMetadata) usage = chunk.usageMetadata;
+    }
+  };
+
+  try {
+    await Promise.race([consume(), stopped]);
+    return { text, finishReason: finish, usage };
+  } catch (err) {
+    if (opts.runSignal?.aborted) throw cancelled();
+    if (text.trim() && opts.keepPartial !== false) {
+      const why = stalled ?? (err instanceof Error ? err.message : String(err));
+      console.warn(`[brain] ${opts.label} interrupted after ${text.length} chars (${why.slice(0, 200)}) — keeping the text`);
+      return { text, finishReason: INTERRUPTED_FINISH, usage };
+    }
+    if (stalled) throw new PlatformFaultError(`${opts.label} ${stalled}`);
+    throw err;
+  } finally {
+    clearInterval(watchdog);
+    opts.runSignal?.removeEventListener("abort", onRunAbort);
+    if (!ctl.signal.aborted) ctl.abort();
+  }
+}
 
 export type BrainCompletionOpts = {
   model?: string;
@@ -164,6 +286,12 @@ export type BrainCompletionOpts = {
   onStatus?: (msg: string) => void;
   /** Status line for this call. Defaults to the generic writing line. */
   activity?: string;
+  /**
+   * The caller can continue a partial reply (deliverable JSON). A stream that breaks
+   * after text arrived then returns that text with finishReason INTERRUPTED.
+   * Otherwise a broken stream is an error and admission may retry the call.
+   */
+  continuable?: boolean;
 };
 
 /** Argon and Carbon answer 400 when asked for a thinking level they do not implement. */
@@ -194,52 +322,102 @@ export async function brainCompletionText(opts: BrainCompletionOpts): Promise<Br
   opts.onStatus?.(`${label}…`);
 
   const requested = opts.thinkingLevel ?? ThinkingLevel.MEDIUM;
-  const generate = (thinkingLevel: ThinkingLevel) =>
-    // The deadline sits past Gemini's own 10 minute unary bound, so it never cuts a
-    // reply that could still arrive. It only ends a call that would otherwise hang
-    // the whole deliverable queue. Our own deadline is a platform fault: admission
-    // does not retry it, so the document is not regenerated in a loop.
-    withGeminiAdmission(
-      "brain",
-      () =>
-        withDeadline(
-          withStatusHeartbeat(
-          ai.models.generateContent({
+  const owner = currentGeminiOwnerId() ?? "-";
+  const stream = brainStreamEnabled();
+  const configFor = (thinkingLevel: ThinkingLevel) => ({
+    ...(system ? { systemInstruction: system } : {}),
+    ...(opts.json ? { responseMimeType: "application/json" } : {}),
+    ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
+    thinkingConfig: { thinkingLevel },
+  });
+
+  /** One request. Streamed: text is kept as it arrives. Unary: one bounded wait. */
+  const callOnce = async (thinkingLevel: ThinkingLevel): Promise<BrainText> => {
+    if (stream) {
+      return consumeBrainStream({
+        label,
+        runSignal: brainCallSignal(),
+        onStatus: opts.onStatus,
+        keepPartial: Boolean(opts.continuable),
+        open: (signal) =>
+          ai.models.generateContentStream({
             model,
             contents,
-            config: {
-              ...(system ? { systemInstruction: system } : {}),
-              ...(opts.json ? { responseMimeType: "application/json" } : {}),
-              ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
-              thinkingConfig: { thinkingLevel },
-              abortSignal: brainCallSignal(),
-            },
-          }),
-            { label, onStatus: opts.onStatus, signal: brainCallSignal() },
-          ),
-          { timeoutMs: BRAIN_CALL_TIMEOUT_MS, label, signal: brainCallSignal() },
-        ),
+            config: { ...configFor(thinkingLevel), abortSignal: signal },
+          }) as Promise<AsyncIterable<StreamChunk>>,
+      });
+    }
+    // The deadline sits past Gemini's own 10 minute unary bound. Our own deadline is a
+    // platform fault: admission does not retry it, so the document is not rewritten in a loop.
+    const result = await withDeadline(
+      withStatusHeartbeat(
+        ai.models.generateContent({
+          model,
+          contents,
+          config: { ...configFor(thinkingLevel), abortSignal: brainCallSignal() },
+        }),
+        { label, onStatus: opts.onStatus, signal: brainCallSignal() },
+      ),
+      { timeoutMs: BRAIN_CALL_TIMEOUT_MS, label, signal: brainCallSignal() },
+    );
+    const finish = result.candidates?.[0]?.finishReason;
+    return {
+      text: result.text ?? "",
+      finishReason: finish ? String(finish) : undefined,
+      usage: result.usageMetadata as BrainUsage | undefined,
+    };
+  };
+
+  let attempt = 0;
+  const generate = (thinkingLevel: ThinkingLevel) =>
+    withGeminiAdmission(
+      "brain",
+      async () => {
+        attempt += 1;
+        const started = Date.now();
+        try {
+          const got = await callOnce(thinkingLevel);
+          logStage(owner, `gemini ${label}`, Date.now() - started, {
+            model,
+            attempt,
+            mode: stream ? "stream" : "unary",
+            chars: got.text.length,
+            finish: got.finishReason,
+            in: got.usage?.promptTokenCount,
+            out: got.usage?.candidatesTokenCount,
+            thoughts: got.usage?.thoughtsTokenCount,
+          });
+          return got;
+        } catch (err) {
+          logStage(owner, `gemini ${label}`, Date.now() - started, {
+            model,
+            attempt,
+            mode: stream ? "stream" : "unary",
+            failed: err instanceof Error ? err.message : String(err),
+          });
+          throw err;
+        }
+      },
       { onStatus: opts.onStatus },
     );
 
-  let result;
   try {
-    result = await generate(requested);
+    return await generate(requested);
   } catch (err) {
     if (requested === ThinkingLevel.MEDIUM || !isUnsupportedThinkingLevel(err)) throw err;
     opts.onStatus?.(`${label} — ${requested} thinking is not supported, retrying at medium…`);
-    result = await generate(ThinkingLevel.MEDIUM);
+    return generate(ThinkingLevel.MEDIUM);
   }
-  const finish = result.candidates?.[0]?.finishReason;
-  return {
-    text: result.text ?? "",
-    finishReason: finish ? String(finish) : undefined,
-  };
 }
 
 /** Text (optional JSON) completion via the selected brain. */
 export async function brainCompletion(opts: BrainCompletionOpts): Promise<string> {
   const got = await brainCompletionText(opts);
+  // Callers of this helper want one whole reply. Only the deliverable path continues a partial one.
+  if (got.finishReason === INTERRUPTED_FINISH) {
+    const model = opts.model?.trim() || BRAIN_MODEL;
+    throw new PlatformFaultError(`${brainLabel(model)} brain (${model}) reply was interrupted before it finished`);
+  }
   const text = got.text.trim();
   if (!text) {
     const model = opts.model?.trim() || BRAIN_MODEL;

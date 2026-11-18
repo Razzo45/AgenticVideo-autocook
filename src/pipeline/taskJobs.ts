@@ -11,6 +11,8 @@ export const TASK_EXECUTE_JOB = "task_execute";
 
 export const TASK_PLAN_FILE = "task_plan.json";
 export const TASK_COMPOSITION_FILE = "task_composition.json";
+/** One saved brain reply per planned file. Kept on a failed run so Retry writes only what is missing. */
+export const TASK_SLICES_DIR = "task_slices";
 
 export function isTaskPlanJob(type: string | null | undefined): boolean {
   return String(type ?? "") === TASK_PLAN_JOB;
@@ -25,7 +27,7 @@ export const TASK_PLAN_JOB_SQL = `'${TASK_PLAN_JOB}'`;
 export const TASK_EXECUTE_JOB_SQL = `'${TASK_EXECUTE_JOB}'`;
 
 export function isKeptTaskMetaFile(name: string): boolean {
-  return name === TASK_PLAN_FILE || name === TASK_COMPOSITION_FILE;
+  return name === TASK_PLAN_FILE || name === TASK_COMPOSITION_FILE || name === TASK_SLICES_DIR;
 }
 
 export function taskPlanPath(dir: string): string {

@@ -34,7 +34,8 @@ import { hydrateRunInputs } from "./inputs";
 import { classifyAttachment } from "./attachForBrain";
 import { runDir } from "./paths";
 import { stageLocalPath } from "./geminiStaging";
-import { ensureAbsRunFile, persistRunFile } from "./storage";
+import crypto from "node:crypto";
+import { deleteRunPrefix, ensureAbsRunFile, persistRunFile } from "./storage";
 import { weightFromDeliverables, type PlannedDeliverable } from "./taskWeight";
 import {
   buildComposition,
@@ -45,8 +46,10 @@ import {
 import { enqueueJob, updateRun, upsertAsset, type RunRow } from "../db";
 import { withGeminiOwner } from "./geminiAdmission";
 import { logStage, stage } from "./stageLog";
+import { PlatformFaultError, isCancelledError, isPlatformFaultError } from "./runControl";
 import {
   TASK_EXECUTE_JOB,
+  TASK_SLICES_DIR,
   ensureTaskPlanFile,
   taskCompositionWritePath,
   taskPlanWritePath,
@@ -141,6 +144,7 @@ async function continueCutOffJson(opts: {
       followUp,
       json: false,
       maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
+      continuable: true,
       thinkingLevel: ThinkingLevel.LOW,
       onStatus: opts.onStatus,
       activity: `${opts.activity} continuing`,
@@ -198,6 +202,61 @@ export function keepPlannedDeliverables<T extends { id: string; filename: string
     return { kept: first, dropped: written.slice(slice.length) };
   }
   return { kept, dropped: written.filter((item) => !used.has(item)) };
+}
+
+/** Identity of one execute call: the planned files it writes and the brain that writes them. */
+export function sliceKey(slice: PlannedDeliverable[], model: string): string {
+  const body = JSON.stringify({
+    model,
+    files: slice.map((item) => [item.deliverable ?? "", item.id ?? "", item.filename ?? "", item.note ?? ""]),
+  });
+  return crypto.createHash("sha256").update(body).digest("hex").slice(0, 16);
+}
+
+export function sliceCheckpointPath(dir: string, sliceIndex: number): string {
+  return path.join(dir, TASK_SLICES_DIR, `slice_${sliceIndex + 1}.json`);
+}
+
+type SliceCheckpoint = { key: string; deliverables: Composition["deliverables"] };
+
+/** The brain's finished reply for one planned file, saved the moment it is received. */
+export async function saveSliceCheckpoint(
+  dir: string,
+  sliceIndex: number,
+  key: string,
+  deliverables: Composition["deliverables"],
+): Promise<void> {
+  const file = sliceCheckpointPath(dir, sliceIndex);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ key, deliverables } satisfies SliceCheckpoint));
+  try {
+    // The worker disk does not survive a restart. The bucket copy is what a retry reads.
+    await persistRunFile(file);
+  } catch (err) {
+    console.warn(`[task] checkpoint upload failed for ${path.basename(file)}`, err instanceof Error ? err.message : err);
+  }
+}
+
+/** A saved reply for this exact slice, or null. A changed plan or brain does not match. */
+export async function loadSliceCheckpoint(
+  dir: string,
+  sliceIndex: number,
+  key: string,
+): Promise<Composition["deliverables"] | null> {
+  const file = sliceCheckpointPath(dir, sliceIndex);
+  try {
+    await ensureAbsRunFile(file);
+  } catch {
+    /* not saved */
+  }
+  if (!fs.existsSync(file)) return null;
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, "utf8")) as SliceCheckpoint;
+    if (saved.key !== key || !Array.isArray(saved.deliverables) || !saved.deliverables.length) return null;
+    return saved.deliverables;
+  } catch {
+    return null;
+  }
 }
 
 /** How many planned files one task writes at the same time. */
@@ -436,6 +495,14 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
 
   const writeSlice = async (slice: PlannedDeliverable[], sliceIndex: number): Promise<Composition["deliverables"]> => {
     const sliceStarted = Date.now();
+    const key = sliceKey(slice, model);
+    const saved = await loadSliceCheckpoint(dir, sliceIndex, key);
+    if (saved) {
+      logStage(run.id, `brain ${sliceIndex + 1}/${slices.length} reused`, 0, {
+        files: saved.map((item) => item.filename).join(","),
+      });
+      return saved;
+    }
     let continuations = 0;
     let lastFinish: string | undefined;
     const siblings = pdfSiblingFilenames(planned, slice);
@@ -483,6 +550,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
         userParts,
         json: true,
         maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
+        continuable: true,
         thinkingLevel: ThinkingLevel.LOW,
         onStatus: onBrainStatus,
         activity: sliceLabel,
@@ -524,6 +592,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
           ],
           json: true,
           maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
+          continuable: true,
           thinkingLevel: ThinkingLevel.LOW,
           onStatus: onBrainStatus,
           activity: `${sliceLabel} rebuilding`,
@@ -547,14 +616,34 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
       continuations,
       dropped: dropped.length || undefined,
     });
+    await saveSliceCheckpoint(dir, sliceIndex, key, kept);
     return kept;
   };
 
   // Each planned file is its own brain call. They run side by side, each as its
   // own admission owner, so one task's files do not wait in line behind each other.
-  const written = await mapLimit(slices, sliceConcurrency(), (slice, sliceIndex) =>
-    withGeminiOwner(`${run.id}:slice${sliceIndex + 1}`, () => writeSlice(slice, sliceIndex)),
+  // A file that fails does not stop the others: they finish and are saved, so a
+  // retry writes only what is missing.
+  const outcomes = await mapLimit(slices, sliceConcurrency(), (slice, sliceIndex) =>
+    withGeminiOwner(`${run.id}:slice${sliceIndex + 1}`, () => writeSlice(slice, sliceIndex)).then(
+      (deliverables) => ({ ok: true as const, deliverables }),
+      (error: unknown) => ({ ok: false as const, error, slice }),
+    ),
   );
+  const failures = outcomes.flatMap((outcome) => (outcome.ok ? [] : [outcome]));
+  if (failures.length) {
+    const cancelled = failures.find((failure) => isCancelledError(failure.error));
+    if (cancelled) throw cancelled.error;
+    const first = failures[0]!;
+    const message = first.error instanceof Error ? first.error.message : String(first.error);
+    const missing = failures
+      .flatMap((failure) => failure.slice.map((item) => item.filename || item.deliverable))
+      .join(", ");
+    const done = outcomes.length - failures.length;
+    const summary = `${message} — ${done} of ${outcomes.length} file(s) are written and saved. Retry writes only: ${missing}.`;
+    throw isPlatformFaultError(first.error) ? new PlatformFaultError(summary) : new Error(summary);
+  }
+  const written = outcomes.flatMap((outcome) => (outcome.ok ? [outcome.deliverables] : []));
   const merged: Composition["deliverables"] = written.flat();
   // Two calls can still land on one filename. Keep the first.
   for (let i = merged.length - 1; i >= 0; i--) {
@@ -606,6 +695,10 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   const manifest = path.join(dir, "deliverables.json");
   fs.writeFileSync(manifest, JSON.stringify(deliverables, null, 2));
   await persistRunFile(manifest);
+
+  // The files exist. The saved replies are no longer needed.
+  fs.rmSync(path.join(dir, TASK_SLICES_DIR), { recursive: true, force: true });
+  await deleteRunPrefix(run.id, TASK_SLICES_DIR).catch(() => undefined);
 
   await updateRun(run.id, { status: "exported", counted: 0, gate: null, error: null });
 }
