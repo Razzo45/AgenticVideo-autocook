@@ -15,6 +15,16 @@ export const BRAIN_ROUND_TIMEOUT_MS = Number(process.env.BRAIN_ROUND_TIMEOUT_MS)
  * so a reply cannot arrive after that. Past this the call is failed, not waited on forever.
  */
 export const BRAIN_CALL_TIMEOUT_MS = Number(process.env.BRAIN_CALL_TIMEOUT_MS) || 12 * 60_000;
+/**
+ * One streamed deliverable call, start to finish. Gemini bounds a streamed request
+ * at 20 minutes on its side.
+ */
+export const BRAIN_STREAM_TIMEOUT_MS = Number(process.env.BRAIN_STREAM_TIMEOUT_MS) || 20 * 60_000;
+/**
+ * Once text has started arriving, the longest silence before the stream counts as dead.
+ * Not applied before the first text: the model may think for minutes first.
+ */
+export const BRAIN_STREAM_IDLE_MS = Number(process.env.BRAIN_STREAM_IDLE_MS) || 4 * 60_000;
 /** One TTS cue. */
 export const TTS_TIMEOUT_MS = Number(process.env.TTS_TIMEOUT_MS) || 5 * 60_000;
 /** One Lyria track. */

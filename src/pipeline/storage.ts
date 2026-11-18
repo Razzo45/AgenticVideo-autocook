@@ -45,8 +45,8 @@ function rememberInBucket(abs: string): void {
   if (stamp) inBucket.set(path.resolve(abs), stamp);
 }
 
-function forgetRunInBucket(runId: string): void {
-  const root = path.resolve(RUNS_DIR, runId) + path.sep;
+function forgetRunInBucket(runId: string, relPrefix = ""): void {
+  const root = path.resolve(RUNS_DIR, runId, relPrefix) + path.sep;
   for (const key of inBucket.keys()) if (key.startsWith(root)) inBucket.delete(key);
 }
 
@@ -227,9 +227,12 @@ export async function persistRunTree(runId: string, relPrefix = ""): Promise<num
     for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, ent.name);
       if (ent.isDirectory()) {
-        if (ent.name === ".omni_upload" || ent.name === "node_modules") continue;
+        // _read holds files unpacked from an attached archive. The archive itself is
+        // already in the bucket and is unpacked again when needed.
+        if (ent.name === ".omni_upload" || ent.name === "node_modules" || ent.name === "_read") continue;
         await walk(full);
       } else if (ent.isFile()) {
+        if (ent.name.startsWith(DOWNLOAD_PREFIX)) continue;
         const before = inBucket.get(path.resolve(full));
         await persistRunFile(full);
         if (storageMode() !== "s3" || inBucket.get(path.resolve(full)) !== before) n += 1;
@@ -274,16 +277,47 @@ export async function ensureLocalRunFile(runId: string, relPath: string): Promis
   const abs = localRunPath(runId, rel);
   if (fs.existsSync(abs) && fs.statSync(abs).size > 0) return abs;
   if (storageMode() !== "s3") return abs;
-  const out = await s3Client().send(
-    new GetObjectCommand({ Bucket: bucket(), Key: `runs/${runId}/${rel}` }),
-    { abortSignal: AbortSignal.timeout(120_000) },
-  );
-  if (!out.Body) throw new Error(`Empty bucket object: runs/${runId}/${rel}`);
-  fs.mkdirSync(path.dirname(abs), { recursive: true });
-  await pipeline(out.Body as Readable, fs.createWriteStream(abs));
-  rememberInBucket(abs);
-  return abs;
+  // One download per file. A second caller waits for it; it never sees a half-written file.
+  const pending = downloads.get(abs);
+  if (pending) return pending;
+  const work = (async () => {
+    const out = await s3Client().send(
+      new GetObjectCommand({ Bucket: bucket(), Key: `runs/${runId}/${rel}` }),
+      { abortSignal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) },
+    );
+    if (!out.Body) throw new Error(`Empty bucket object: runs/${runId}/${rel}`);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    // Written beside the target and renamed when complete. The file name only
+    // exists once every byte is there, so the run page and /api/media cannot
+    // list or serve a truncated deliverable.
+    const part = path.join(path.dirname(abs), `${DOWNLOAD_PREFIX}${process.pid}-${Date.now().toString(36)}-${path.basename(abs)}`);
+    try {
+      await pipeline(out.Body as Readable, fs.createWriteStream(part));
+      const want = Number(out.ContentLength);
+      const got = fs.statSync(part).size;
+      if (Number.isFinite(want) && want > 0 && got !== want) {
+        throw new Error(`Short download for runs/${runId}/${rel}: ${got} of ${want} bytes`);
+      }
+      fs.renameSync(part, abs);
+    } catch (err) {
+      fs.rmSync(part, { force: true });
+      throw err;
+    }
+    rememberInBucket(abs);
+    return abs;
+  })();
+  downloads.set(abs, work);
+  try {
+    return await work;
+  } finally {
+    if (downloads.get(abs) === work) downloads.delete(abs);
+  }
 }
+
+const downloads = new Map<string, Promise<string>>();
+const DOWNLOAD_PREFIX = ".dl-";
+/** One object from the bucket. Sized for a large deliverable over a slow link. */
+const DOWNLOAD_TIMEOUT_MS = Number(process.env.S3_GET_TIMEOUT_MS) || 5 * 60_000;
 
 /** True when the run file is on local disk or in the bucket. Does not download it. */
 export async function runFileExists(absPath: string): Promise<boolean> {
@@ -329,7 +363,7 @@ export async function ensureAbsRunFile(absPath: string): Promise<string> {
 export async function deleteRunPrefix(runId: string, relPrefix = ""): Promise<number> {
   const prefix = relPrefix.replace(/\\/g, "/").replace(/^\/+/, "");
   let n = 0;
-  forgetRunInBucket(runId);
+  forgetRunInBucket(runId, prefix);
   const root = localRunPath(runId, prefix);
   if (fs.existsSync(root)) {
     fs.rmSync(root, { recursive: true, force: true });

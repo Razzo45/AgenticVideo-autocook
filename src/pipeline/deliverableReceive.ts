@@ -12,8 +12,11 @@ export const DELIVERABLE_CONTINUATIONS = 6;
 /** Shared opening long enough to tell a restarted document from a real suffix. */
 const RESTART_HEAD = 32;
 
+/** A stream that dropped or stalled after text had arrived. The text so far is kept. */
+export const INTERRUPTED_FINISH = "INTERRUPTED";
+
 export function isCutOffFinish(reason: string | undefined): boolean {
-  return reason === "MAX_TOKENS";
+  return reason === "MAX_TOKENS" || reason === INTERRUPTED_FINISH;
 }
 
 /** JSON.parse reached the end of the text inside a value. The reply stopped early. */

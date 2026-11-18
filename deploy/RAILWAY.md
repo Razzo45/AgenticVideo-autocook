@@ -34,7 +34,9 @@ Web and worker must ship this revision together. New cooks enqueue `task_plan` /
 - `GEMINI_OMNI_CONCURRENCY=2` — video clips in flight
 - `TASK_SLICE_CONCURRENCY=3` — planned files of one task written side by side
 - `HYGIENE_INTERVAL_MS` — default 5 min; the sweep runs beside the claim loop
-- `BRAIN_CALL_TIMEOUT_MS` (12 min), `TTS_TIMEOUT_MS` (5 min), `MUSIC_TIMEOUT_MS` (10 min), `S3_CALL_TIMEOUT_MS` (30 s)
+- `BRAIN_STREAM` — default on; brain replies are streamed and partial text survives a dropped connection. `0` goes back to one unary request per call
+- `BRAIN_STREAM_TIMEOUT_MS` (20 min per streamed call), `BRAIN_STREAM_IDLE_MS` (4 min of silence after text has started)
+- `BRAIN_CALL_TIMEOUT_MS` (12 min, unary mode only), `TTS_TIMEOUT_MS` (5 min), `MUSIC_TIMEOUT_MS` (10 min), `S3_CALL_TIMEOUT_MS` (30 s)
 - `STAGING_IDLE_MS` — default 5h; purge plates/shots after finished + idle
 - `RUN_TTL_MS` — default 24h; delete entire run (including download)
 
