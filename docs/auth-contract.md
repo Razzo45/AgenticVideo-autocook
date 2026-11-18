@@ -59,7 +59,7 @@ Service callers send `Authorization: Bearer <AUTOCOOK_SERVICE_TOKEN>` and `X-Use
 A cook has two stages.
 
 1. **Plan.** The brain reads the prompt and the files and returns the list of files it will make. This is text. It can run while someone else's files are generating.
-2. **Deliverables.** That list sets `taskWeight`. The worker makes one task's files at a time. Lower weight goes first. A task already in a later generation stage finishes before the next person starts.
+2. **Deliverables.** That list sets `taskWeight`. The worker makes up to `TASK_EXECUTE_CONCURRENCY` tasks' files at once (default 2), and only one of them may make video. Someone with nothing running goes before someone who already has a task generating. Then lower weight goes first, and waiting counts: every `QUEUE_AGING_MINUTES` (default 2) makes a task one unit lighter. A task already in a later generation stage finishes before the next person starts.
 
 | Deliverable | Weight |
 |-------------|--------|

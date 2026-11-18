@@ -1,6 +1,7 @@
 import { claimNextJob, reclaimRunningJobs } from "./db";
 import { advanceStuckAutoRuns, processJob } from "./pipeline/orchestrator";
 import { loadModelsConfig } from "./pipeline/config";
+import { workerSlots } from "./pipeline/claimSql";
 import { RUNS_DIR } from "./pipeline/paths";
 import { HYGIENE_INTERVAL_MS, runHygieneSweep } from "./pipeline/hygiene";
 import { ensureRailwaySchema } from "./pipeline/ensureSchema";
@@ -163,7 +164,7 @@ async function loop() {
           lastHygiene = Date.now();
         });
     }
-    const max = loadModelsConfig().maxParallelRuns;
+    const max = workerSlots(loadModelsConfig().maxParallelRuns);
     while (inFlight.size < max) {
       let job;
       try {

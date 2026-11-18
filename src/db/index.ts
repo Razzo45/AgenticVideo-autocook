@@ -9,6 +9,7 @@ import {
 import { scheduleForJob } from "../pipeline/taskWeight";
 import { TASK_EXECUTE_JOB_SQL, TASK_PLAN_JOB_SQL } from "../pipeline/taskJobs";
 import { clipStatusLine, type QueueSnapshot, type QueueTask } from "../pipeline/queueStatus";
+import { claimSql } from "../pipeline/claimSql";
 import type { AssetRow, JobRow, ReviewRow, RunRow, VariantRow } from "./types";
 import * as pg from "./pgBackend";
 
@@ -571,45 +572,14 @@ export async function runHasBusyJobs(runId: string): Promise<boolean> {
   return Boolean(row);
 }
 
-/**
- * Two queues:
- * - task_plan is text. It can run while a deliverable task is generating.
- * - Every other job is the deliverable queue. One of those runs at a time.
- *   A run that already finished a generation stage goes first.
- *   Among new deliverable tasks, lower task_weight (from the plan) goes first.
- */
+/** Next job to run. The rules live in claimSql.ts (shared with Postgres). */
 export async function claimNextJob(): Promise<JobRow | undefined> {
   if (usePg()) return pg.pgClaimNextJob();
   const database = getDb();
   database.exec("BEGIN IMMEDIATE");
   try {
     const job = database
-      .prepare(
-        `SELECT j.* FROM jobs j
-         WHERE j.status = 'pending'
-           AND NOT EXISTS (
-             SELECT 1 FROM jobs r WHERE r.run_id = j.run_id AND r.status = 'running'
-           )
-           AND (
-             j.type IN (${TASK_PLAN_JOB_SQL})
-             OR NOT EXISTS (
-               SELECT 1 FROM jobs busy
-               WHERE busy.status = 'running' AND busy.type NOT IN (${TASK_PLAN_JOB_SQL})
-             )
-           )
-         ORDER BY
-           CASE
-             WHEN j.type NOT IN (${TASK_PLAN_JOB_SQL}) AND EXISTS (
-               SELECT 1 FROM jobs prev
-               WHERE prev.run_id = j.run_id AND prev.status = 'done' AND prev.type NOT IN (${TASK_PLAN_JOB_SQL})
-             ) THEN 0
-             WHEN j.type NOT IN (${TASK_PLAN_JOB_SQL}) THEN 1
-             ELSE 2
-           END,
-           CASE WHEN j.type IN (${TASK_PLAN_JOB_SQL}) THEN 0 ELSE COALESCE(j.task_weight, 10) END ASC,
-           j.created_at ASC
-         LIMIT 1`,
-      )
+      .prepare(claimSql("sqlite"))
       .get() as JobRow | undefined;
     if (!job) {
       database.exec("COMMIT");

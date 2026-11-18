@@ -16,6 +16,7 @@ import {
   brainCompletionText,
   brainGuidedWriteSvgThenJson,
   brainWithTools,
+  type BrainText,
   type GuidedHtmlTarget,
   type GuidedSvgTarget,
 } from "./geminiBrain";
@@ -40,6 +41,8 @@ import { weightFromDeliverables, type PlannedDeliverable } from "./taskWeight";
 import {
   buildComposition,
   composeInstructions,
+  composeTaskInstructions,
+  sliceTurnText,
   parseComposition,
   type Composition,
 } from "./composition";
@@ -47,6 +50,7 @@ import { enqueueJob, updateRun, upsertAsset, type RunRow } from "../db";
 import { withGeminiOwner } from "./geminiAdmission";
 import { logStage, stage } from "./stageLog";
 import { PlatformFaultError, isCancelledError, isPlatformFaultError } from "./runControl";
+import { createTaskCache, deleteTaskCache, isCacheError, shouldCacheTask } from "./geminiCache";
 import {
   TASK_EXECUTE_JOB,
   TASK_SLICES_DIR,
@@ -121,8 +125,8 @@ function replyBreak(
 async function continueCutOffJson(opts: {
   text: string;
   finishReason: string | undefined;
-  model: string;
-  userParts: Part[];
+  /** Ask the brain for the rest of its own reply. Same instructions and files as the first call. */
+  continueReply: (prior: string, followUp: string, activity: string) => Promise<BrainText>;
   activity: string;
   onStatus?: (msg: string) => void;
   onContinue?: () => void;
@@ -136,19 +140,7 @@ async function continueCutOffJson(opts: {
     const followUp = continuationFollowUp();
     opts.onStatus?.(`${opts.activity} was cut off — continuing the same JSON…`);
     opts.onContinue?.();
-    const next = await brainCompletionText({
-      model: opts.model,
-      messages: [{ role: "system", content: followUp }],
-      userParts: opts.userParts,
-      priorModelText: text,
-      followUp,
-      json: false,
-      maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
-      continuable: true,
-      thinkingLevel: ThinkingLevel.LOW,
-      onStatus: opts.onStatus,
-      activity: `${opts.activity} continuing`,
-    });
+    const next = await opts.continueReply(text, followUp, `${opts.activity} continuing`);
     if (!next.text.trim()) break;
     const stitched = stitchDeliverableText(text, next.text);
     if (stitched === text) break;
@@ -493,6 +485,51 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   const onBrainTool = (name: string, args: Record<string, unknown>) =>
     executeMediaTool(name, args, toolCtx);
 
+  // One instruction for the whole task, then the operator's files, then a short turn
+  // naming the file to write. Every call of the task shares everything up to that turn,
+  // so it can come from a context cache (or Gemini's implicit cache) instead of being
+  // sent again for each file, continuation and rebuild.
+  const sharedSystem = composeTaskInstructions(planned, attachedNames, label);
+  const isGuidedSvg = (slice: PlannedDeliverable[]) => slice.length >= 2 && slice.every(isSvgDeliverable);
+  const plainCalls = slices.filter((slice) => !isGuidedSvg(slice)).length;
+  let cacheName: string | null = null;
+  let cacheDead = false;
+
+  /** One deliverable call. Uses the task cache when there is one, else sends the files inline. */
+  const ask = async (
+    turn: Part[],
+    activity: string,
+    more?: { priorModelText?: string; followUp?: string },
+  ): Promise<BrainText> => {
+    const base = {
+      model,
+      json: !more?.priorModelText,
+      maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
+      continuable: true,
+      thinkingLevel: ThinkingLevel.LOW,
+      onStatus: onBrainStatus,
+      activity,
+      priorModelText: more?.priorModelText,
+      followUp: more?.followUp,
+    };
+    if (cacheName && !cacheDead) {
+      try {
+        return await brainCompletionText({ ...base, messages: [], userParts: turn, cachedContent: cacheName });
+      } catch (err) {
+        if (isCancelledError(err) || !isCacheError(err)) throw err;
+        cacheDead = true;
+        console.warn(
+          `[task] run=${run.id} context cache refused (${err instanceof Error ? err.message.slice(0, 200) : err}) — sending files inline`,
+        );
+      }
+    }
+    return brainCompletionText({
+      ...base,
+      messages: [{ role: "system", content: sharedSystem }],
+      userParts: [...userParts, ...turn],
+    });
+  };
+
   const writeSlice = async (slice: PlannedDeliverable[], sliceIndex: number): Promise<Composition["deliverables"]> => {
     const sliceStarted = Date.now();
     const key = sliceKey(slice, model);
@@ -509,7 +546,8 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
     const system = composeInstructions(slice, attachedNames, label, siblings);
     const names = slice.map((item) => item.filename || item.deliverable).join(", ");
     const sliceLabel = `${label} ${sliceIndex + 1}/${slices.length} (${names})`;
-    const svgSlice = slice.length >= 2 && slice.every(isSvgDeliverable);
+    const svgSlice = isGuidedSvg(slice);
+    const turn: Part[] = [{ text: sliceTurnText(slice, siblings) }];
 
     const parseSlice = (raw: string) =>
       parseComposition(raw, {
@@ -521,8 +559,22 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
       continueCutOffJson({
         text: raw,
         finishReason: finish,
-        model,
-        userParts,
+        continueReply: (prior, followUp, label) =>
+          svgSlice
+            ? brainCompletionText({
+                model,
+                messages: [{ role: "system", content: system }],
+                userParts,
+                priorModelText: prior,
+                followUp,
+                json: false,
+                maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
+                continuable: true,
+                thinkingLevel: ThinkingLevel.LOW,
+                onStatus: onBrainStatus,
+                activity: label,
+              })
+            : ask(turn, label, { priorModelText: prior, followUp }),
         activity,
         onStatus: onBrainStatus,
         onContinue: () => {
@@ -544,17 +596,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
       });
       text = await receive(text, undefined, sliceLabel);
     } else {
-      const written = await brainCompletionText({
-        model,
-        messages: [{ role: "system", content: system }],
-        userParts,
-        json: true,
-        maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
-        continuable: true,
-        thinkingLevel: ThinkingLevel.LOW,
-        onStatus: onBrainStatus,
-        activity: sliceLabel,
-      });
+      const written = await ask(turn, sliceLabel);
       if (!written.text.trim()) throw new Error(`${label} brain (${model}) returned no content`);
       lastFinish = written.finishReason;
       text = await receive(written.text, written.finishReason, sliceLabel);
@@ -583,20 +625,10 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
         });
         text = await receive(text, undefined, sliceLabel);
       } else {
-        const rewritten = await brainCompletionText({
-          model,
-          messages: [{ role: "system", content: ping }],
-          userParts: [
-            ...userParts,
-            { text: `The previous reply could not be built (${message}). Reply with the JSON object only.` },
-          ],
-          json: true,
-          maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
-          continuable: true,
-          thinkingLevel: ThinkingLevel.LOW,
-          onStatus: onBrainStatus,
-          activity: `${sliceLabel} rebuilding`,
-        });
+        const rewritten = await ask(
+          [...turn, { text: `The previous reply could not be built (${message}). Reply with the JSON object only.` }],
+          `${sliceLabel} rebuilding`,
+        );
         if (!rewritten.text.trim()) throw new Error(`${label} brain (${model}) returned no content`);
         text = await receive(rewritten.text, rewritten.finishReason, `${sliceLabel} rebuilding`);
       }
@@ -624,12 +656,27 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   // own admission owner, so one task's files do not wait in line behind each other.
   // A file that fails does not stop the others: they finish and are saved, so a
   // retry writes only what is missing.
-  const outcomes = await mapLimit(slices, sliceConcurrency(), (slice, sliceIndex) =>
-    withGeminiOwner(`${run.id}:slice${sliceIndex + 1}`, () => writeSlice(slice, sliceIndex)).then(
-      (deliverables) => ({ ok: true as const, deliverables }),
-      (error: unknown) => ({ ok: false as const, error, slice }),
-    ),
-  );
+  // Files already saved by an earlier attempt do not need the cache.
+  let pendingCalls = 0;
+  for (const [sliceIndex, slice] of slices.entries()) {
+    if (isGuidedSvg(slice)) continue;
+    if (!(await loadSliceCheckpoint(dir, sliceIndex, sliceKey(slice, model)))) pendingCalls += 1;
+  }
+  if (shouldCacheTask(userParts, Math.min(plainCalls, pendingCalls))) {
+    await updateRun(run.id, { error: `${label} is caching the task files…` });
+    cacheName = await createTaskCache({ runId: run.id, model, system: sharedSystem, userParts });
+  }
+  let outcomes;
+  try {
+    outcomes = await mapLimit(slices, sliceConcurrency(), (slice, sliceIndex) =>
+      withGeminiOwner(`${run.id}:slice${sliceIndex + 1}`, () => writeSlice(slice, sliceIndex)).then(
+        (deliverables) => ({ ok: true as const, deliverables }),
+        (error: unknown) => ({ ok: false as const, error, slice }),
+      ),
+    );
+  } finally {
+    await deleteTaskCache(run.id, cacheName);
+  }
   const failures = outcomes.flatMap((outcome) => (outcome.ok ? [] : [outcome]));
   if (failures.length) {
     const cancelled = failures.find((failure) => isCancelledError(failure.error));
