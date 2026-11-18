@@ -9,6 +9,7 @@ import {
   PlatformFaultError,
   RunCancelledError,
   withDeadline,
+  withStatusHeartbeat,
 } from "../../src/pipeline/runControl";
 
 describe("runControl", () => {
@@ -45,6 +46,24 @@ describe("runControl", () => {
     } catch (err) {
       assert.ok(err instanceof PlatformFaultError);
       assert.match((err as Error).message, /timed out after/);
+    }
+  });
+
+  it("stops a status-heartbeat wait when the run is cancelled", async () => {
+    const runId = `run_hb_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const signal = beginRunControl(runId);
+    try {
+      const work = withStatusHeartbeat(new Promise<string>(() => {}), {
+        label: "unit heartbeat",
+        signal,
+      });
+      queueMicrotask(() => cancelRunControl(runId, "unit delete"));
+      await assert.rejects(work, (err: unknown) => {
+        assert.equal((err as Error).name, "RunCancelledError");
+        return true;
+      });
+    } finally {
+      endRunControl(runId);
     }
   });
 

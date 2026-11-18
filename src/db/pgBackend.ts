@@ -132,7 +132,8 @@ export async function pgUpdateRun(
   opts?: { resume?: boolean },
 ): Promise<void> {
   const current = await pgGetRun(id);
-  if (!current) throw new Error(`Unknown run ${id}`);
+  // Tickers keep firing after Delete; throwing here became unhandledRejection spam.
+  if (!current) return;
   // Terminal FSM: failed/exported/rejected cannot be resurrected into active cook states.
   let safePatch: Partial<RunRow> = patch;
   const terminal = current.status === "failed" || current.status === "exported" || current.status === "rejected";
