@@ -29,6 +29,7 @@ Web and worker must ship this revision together. New cooks enqueue `task_plan` /
   - `S3_SECRET_ACCESS_KEY=${{autocook.SECRET_ACCESS_KEY}}`
 - `S3_FORCE_PATH_STYLE=0` — Railway buckets use virtual-hosted URLs (set `1` only for path-style providers)
 - `RUNS_DIR` — optional local mirror path (default `/app/runs` or `./runs`)
+- `PPTX_EMBED_FONTS` — default off; `1` embeds attached .ttf/.otf faces the deck names, as Embedded OpenType (.fntdata)
 - `GEMINI_FILES_CONCURRENCY=2`, `GEMINI_OWNER_CONCURRENCY=1`
 - `GEMINI_CONCURRENCY=4`, `GEMINI_CONCURRENCY_INITIAL=3` — calls in flight on the one key (brain + image + video + audio). Defaults shown. AIMD halves on a 429.
 - `GEMINI_OMNI_CONCURRENCY=2` — video clips in flight
