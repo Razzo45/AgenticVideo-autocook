@@ -154,6 +154,12 @@ export type BrainCompletionOpts = {
   thinkingLevel?: ThinkingLevel;
   /** Operator turn, including attached files. When set, message text parts are not used. */
   userParts?: Part[];
+  /**
+   * Cut-off continuation. This text is the model's own previous turn.
+   * followUp is the only new user text. userParts stay the original operator turn.
+   */
+  priorModelText?: string;
+  followUp?: string;
   onStatus?: (msg: string) => void;
   /** Status line for this call. Defaults to the generic writing line. */
   activity?: string;
@@ -172,6 +178,17 @@ export async function brainCompletionText(opts: BrainCompletionOpts): Promise<Br
   const { system, parts } = flattenMessages(opts.messages);
   const userParts = opts.userParts?.length ? opts.userParts : (parts as Part[]);
   if (!userParts.length) throw new Error("brainCompletion: empty user content");
+  const prior = opts.priorModelText ?? "";
+  const followUp =
+    opts.followUp?.trim() ||
+    "Continue from the exact last character of your previous message. Output only the missing characters.";
+  const contents: Content[] = prior
+    ? [
+        { role: "user", parts: userParts },
+        { role: "model", parts: [{ text: prior }] },
+        { role: "user", parts: [{ text: followUp }] },
+      ]
+    : [{ role: "user", parts: userParts }];
   const label = opts.activity?.trim() || `${brainLabel(model)} is writing the deliverables`;
   opts.onStatus?.(`${label}…`);
 
@@ -185,7 +202,7 @@ export async function brainCompletionText(opts: BrainCompletionOpts): Promise<Br
         withStatusHeartbeat(
           ai.models.generateContent({
             model,
-            contents: [{ role: "user", parts: userParts }],
+            contents,
             config: {
               ...(system ? { systemInstruction: system } : {}),
               ...(opts.json ? { responseMimeType: "application/json" } : {}),

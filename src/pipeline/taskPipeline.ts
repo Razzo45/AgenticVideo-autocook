@@ -5,7 +5,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import type { Part } from "@google/genai";
+import { ThinkingLevel, type Part } from "@google/genai";
 import {
   MEDIA_TOOL_DECLARATIONS,
   executeMediaTool,
@@ -22,8 +22,7 @@ import {
 import {
   DELIVERABLE_CONTINUATIONS,
   DELIVERABLE_MAX_OUTPUT_TOKENS,
-  continuationPrompt,
-  continuationTail,
+  continuationFollowUp,
   isCutOffFinish,
   isCutOffParseError,
   jsonSliceParsable,
@@ -128,14 +127,17 @@ async function continueCutOffJson(opts: {
   for (let i = 0; i < DELIVERABLE_CONTINUATIONS; i++) {
     const broken = replyBreak(text, finish, opts.parse);
     if (broken !== "cutoff") return text;
-    const prompt = continuationPrompt(continuationTail(text));
+    const followUp = continuationFollowUp();
     opts.onStatus?.(`${opts.activity} was cut off — continuing the same JSON…`);
     const next = await brainCompletionText({
       model: opts.model,
-      messages: [{ role: "system", content: prompt }],
-      userParts: [...opts.userParts, { text: prompt }],
+      messages: [{ role: "system", content: followUp }],
+      userParts: opts.userParts,
+      priorModelText: text,
+      followUp,
       json: false,
       maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
+      thinkingLevel: ThinkingLevel.LOW,
       onStatus: opts.onStatus,
       activity: `${opts.activity} continuing`,
     });
@@ -407,6 +409,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
         userParts,
         json: true,
         maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
+        thinkingLevel: ThinkingLevel.LOW,
         onStatus: onBrainStatus,
         activity: sliceLabel,
       });
@@ -446,6 +449,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
           ],
           json: true,
           maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS,
+          thinkingLevel: ThinkingLevel.LOW,
           onStatus: onBrainStatus,
           activity: `${sliceLabel} rebuilding`,
         });
