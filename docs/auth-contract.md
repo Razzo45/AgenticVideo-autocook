@@ -58,7 +58,7 @@ Service callers send `Authorization: Bearer <AUTOCOOK_SERVICE_TOKEN>` and `X-Use
 
 A cook has two stages.
 
-1. **Plan.** The brain reads the prompt and the files and returns the list of files it will make. This is text. It can run while someone else's files are generating.
+1. **Plan.** The brain reads the prompt and the files and returns the list of files it will make. In a second turn of the same conversation it writes the decisions every file shares and a brief for each file (`task_plan.json` keeps both). Each file is then written in its own call from those. This is text. It can run while someone else's files are generating.
 2. **Deliverables.** That list sets `taskWeight`. The worker makes up to `TASK_EXECUTE_CONCURRENCY` tasks' files at once (default 2), and only one of them may make video. Someone with nothing running goes before someone who already has a task generating. Then lower weight goes first, and waiting counts: every `QUEUE_AGING_MINUTES` (default 2) makes a task one unit lighter. A task already in a later generation stage finishes before the next person starts.
 
 | Deliverable | Weight |
@@ -92,3 +92,7 @@ Every run stores `user_id`, `tenant_id`, and `created_by_kind`. `created_by_kind
 ## Idempotency
 
 `requestId` on `POST /api/cook` is unique **per user** (`cook_requests` PK = `(request_id, user_id)`).
+
+### Deliverable notes
+
+Each row of a task's `deliverables` may carry `notes`: things the platform did to that file that the brain did not write — a video prompt cut at the generator's 6000-character limit, a clip made from a still after the generator refused source footage, a music prompt adjusted before sending, a file extension with no encoder, a reply that needed the one rebuild before it could be built, or files a call wrote that were not planned for it and were not delivered. A row with nothing to report has no `notes` field.

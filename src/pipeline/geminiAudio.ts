@@ -14,6 +14,7 @@ import {
 } from "./constants";
 
 import { currentGeminiOwnerId, withGeminiAdmission } from "./geminiAdmission";
+import { recordPlatformNote } from "./platformNotes";
 import { MUSIC_TIMEOUT_MS, TTS_TIMEOUT_MS, getRunSignal, withDeadline } from "./runControl";
 
 export { AUDIO_TTS_MODEL, AUDIO_MUSIC_MODEL, AUDIO_MUSIC_CLIP_MODEL, AUDIO_EXTRACT_MODEL };
@@ -365,7 +366,9 @@ export async function extractAudioBriefWithGemini(opts: {
 /** Strip artist-name / catalogue refs that often trip Lyria prohibited-content filters. */
 export function sanitizeLyriaPrompt(raw: string): string {
   let p = raw.trim();
-  p = p.replace(/\b(in the )?style (of|reminiscent of)\s+[^.]+/gi, "warm mid-2000s psych-folk acoustic vibe");
+  // Removed, not replaced: the music model refuses named styles, and the platform
+  // does not choose a genre in their place.
+  p = p.replace(/\b(in the )?style (of|reminiscent of)\s+[^.]+\.?/gi, "");
   p = p.replace(/\bDevendra Banhart\b/gi, "");
   p = p.replace(/\bMatador Records?\b/gi, "");
   p = p.replace(/\bCocomelon\b/gi, "");
@@ -388,6 +391,9 @@ export async function generateLyriaMusic(opts: {
 }): Promise<string> {
   const base = sanitizeLyriaPrompt(opts.prompt);
   if (!base) throw new Error("Lyria requires a non-empty music prompt");
+  if (base !== opts.prompt.trim().replace(/\s{2,}/g, " ")) {
+    recordPlatformNote(`Music prompt was adjusted for the music model before sending. Sent: "${base.slice(0, 400)}"`);
+  }
   const ai = audioClient();
   const model = opts.clip ? AUDIO_MUSIC_CLIP_MODEL : AUDIO_MUSIC_MODEL;
   const bits = [base];

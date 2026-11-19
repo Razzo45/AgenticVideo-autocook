@@ -16,8 +16,11 @@ import type { BrainLabel } from "./brainChoice";
 import { generateLyriaMusic, generateSpeechTts } from "./geminiAudio";
 import { assertInlinable, expandInlineFiles, inlineNames, lookupInlineFile } from "./inlineFiles";
 import { stage } from "./stageLog";
-import { convertImage, extensionFor as imageExtension, formatForFilename, sniffImage } from "./mediaFormat";
+import { convertImage, encodeMediaTo, extensionFor as imageExtension, formatForFilename, sniffImage } from "./mediaFormat";
 import { embeddingAllowed, toEot } from "./eot";
+import { installedFontsLine, libreOfficeBinary } from "./renderEnv";
+import { VIDEO_PROMPT_MAX_CHARS } from "./videoLimits";
+import { takePlatformNotes } from "./platformNotes";
 
 const execFileAsync = promisify(execFile);
 const EMU_PER_INCH = 914400;
@@ -90,6 +93,10 @@ const musicSchema = z.object({
   file: z.string().optional(),
   instrumental: z.boolean().optional(),
   duration_sec: z.number().positive().optional(),
+  /** Gain on the music in dB (0 = as generated). */
+  level_db: z.number().optional(),
+  /** How long the mix runs: the speech (default), the music, or the longer of the two. */
+  until: z.enum(["speech", "music", "longest"]).optional(),
 });
 
 const fileSchema = z.object({
@@ -121,6 +128,8 @@ export const deliverableSchema = z.object({
   /** Brain intent: keep plate/generator audio, or strip it before the platform encode. */
   audio: z.enum(["keep", "mute"]).optional(),
   speech: z.array(speechSchema).optional(),
+  /** Gain on the speech in dB when music is mixed under it. */
+  speech_level_db: z.number().optional(),
   music: musicSchema.optional(),
   places: z.array(z.string().min(1)).optional(),
 });
@@ -131,7 +140,14 @@ export const compositionSchema = z.object({
 });
 export type Composition = z.infer<typeof compositionSchema>;
 
-export type BuiltFile = { id: string; filename: string; absPath: string; printPath?: string };
+export type BuiltFile = {
+  id: string;
+  filename: string;
+  absPath: string;
+  printPath?: string;
+  /** What the platform did to this file that the brain did not write (a cut prompt, a fallback). */
+  notes?: string[];
+};
 
 const KIND_ALIASES: Record<string, CompositionDeliverable["kind"]> = {
   pptx: "pptx",
@@ -154,11 +170,31 @@ const KIND_ALIASES: Record<string, CompositionDeliverable["kind"]> = {
   mp3: "audio",
 };
 
+export { VIDEO_PROMPT_MAX_CHARS } from "./videoLimits";
+
+/**
+ * What the generators and renderers on this worker do, stated as facts. Shared by the
+ * plan brief and the execute instruction so the brain plans within them.
+ */
+export function generatorFacts(): string {
+  const fonts = installedFontsLine();
+  const office = Boolean(libreOfficeBinary());
+  return `Generator and renderer facts:
+- Pictures: the image model chooses its own pixel size; width and height on a source resize the result. References must be pictures (png, jpg, webp, gif, svg).
+- Video clips: 3–10 seconds, 16:9 or 9:16. References are pictures only; an attached video can be placed, fitted and joined, not used as generator input. A video prompt is sent as written up to ${VIDEO_PROMPT_MAX_CHARS} characters; a longer prompt is cut there and the cut is recorded with the deliverable.
+- Music prompts: artist names, record labels and "in the style of …" phrases are removed before sending, and "kids"/"children's" are reworded, because the music model refuses them.
+- PDF: HTML prints in Chromium. ${office ? "A pptx prints through LibreOffice." : "A pdf cannot be made from a pptx on this worker (no LibreOffice); write its HTML instead."}
+- Decks: ${pptxEmbedFonts() ? "an attached font file whose family a deck names is embedded in the deck." : "fonts are not embedded; a viewer without the named family installed substitutes another."}${
+    fonts ? `\n- Fonts installed where HTML, PDF and SVG are drawn: ${fonts}. Any other family falls back to one of these unless its font file is attached and loaded with @font-face.` : ""
+  }`;
+}
+
 export function composeInstructions(
   planned: unknown[],
   attachedNames: string[],
   brain: BrainLabel = "Argon",
   otherPlannedFilenames: string[] = [],
+  shared?: string,
 ): string {
   const plan = planned.length ? JSON.stringify(planned) : "(none — the operator message names the files)";
   const attached = attachedNames.length ? attachedNames.join(", ") : "(none)";
@@ -170,52 +206,56 @@ export function composeInstructions(
   const otherBlock = others.length
     ? `\nOther files named in this task. A pdf may set "from" to one of these filenames. Do not rewrite those files in this reply.\n${others.join("\n")}\n`
     : "";
+  const sharedBlock = shared?.trim() ? `\nDecisions shared by every file of this task (from your plan):\n${shared.trim()}\n` : "";
   return `You are ${brain}. The operator message and the attached files are the whole job.
 Reply with one JSON object and nothing else. This reply is the deliverable. Write the copy, the notes, the layout, the HTML, and the SVG here.
 ${onlyThis}
+{"deliverables":[{"id":"<string>","filename":"<string>","kind":"pptx"|"pdf"|"html"|"svg"|"image"|"video"|"audio"}]}
 
-{"deliverables":[{"id":"string","filename":"string","kind":"pptx"|"pdf"|"html"|"svg"|"image"|"video"|"audio"}]}
+<…> marks a value you choose. A field you leave out takes the default named beside it.
 
-kind "pptx" — width_in, height_in, slides[]. A slide has notes (the full speaker notes) and elements[].
-x, y, w, h are percentages of the slide.
-{"type":"text","text":"...","x":6,"y":8,"w":80,"h":14,"size":28,"bold":true,"color":"111111","align":"left","font":"Poppins"}
-font is the typeface for that text. A font on the slide or the deck applies where a text element does not name one. An attached font file whose family matches is embedded. Text with no font names no typeface.
-{"type":"shape","x":0,"y":0,"w":100,"h":100,"fill":"F4F1EA"}
-{"type":"image","x":56,"y":18,"w":38,"h":64,"source":{"kind":"place","file":"exact-name.png"}}
-{"type":"image","x":6,"y":28,"w":40,"h":40,"source":{"kind":"generate","prompt":"...","references":["exact-name.png"],"width":1920,"height":1080,"fit":"cover"}}
-{"type":"image","source":{"kind":"svg","svg":"<svg xmlns=\\"http://www.w3.org/2000/svg\\" viewBox=\\"0 0 64 64\\">...</svg>"}}
-Place a file that is already in the package. generate is for a picture that does not exist yet. svg is markup you write. width and height on a source are the exact pixels.
+kind "pptx" — "width_in", "height_in" (default 13.333 and 7.5), "font" (optional), "slides":[]. A slide has "notes" (the full speaker notes), "background":"<hex colour>" (optional), "font" (optional) and "elements":[].
+x, y, w, h are percentages of the slide; below 0 or above 100 sits past the edge.
+{"type":"text","text":"<text>","x":<number>,"y":<number>,"w":<number>,"h":<number>,"size":<points>,"bold":<true|false>,"color":"<hex colour>","align":"left"|"center"|"right","font":"<family name>"}
+Text defaults: size 28 when bold, else 16; color 111111; align left. A font on the slide or the deck applies where a text element does not name one. Text with no font names no typeface.
+{"type":"shape","x":<number>,"y":<number>,"w":<number>,"h":<number>,"fill":"<hex colour>"}
+{"type":"image","x":<number>,"y":<number>,"w":<number>,"h":<number>,"source":{"kind":"place","file":"<attached filename>"}}
+{"type":"image","x":<number>,"y":<number>,"w":<number>,"h":<number>,"source":{"kind":"generate","prompt":"<prompt>","references":["<attached filename>"],"width":<pixels>,"height":<pixels>,"fit":"contain"|"cover"|"stretch"}}
+{"type":"image","x":<number>,"y":<number>,"w":<number>,"h":<number>,"source":{"kind":"svg","svg":"<svg markup>"}}
+Place a file that is already in the package. generate is for a picture that does not exist yet. svg is markup you write. width and height on a source are the exact pixels (fit default contain, padded white). A picture fills its x, y, w, h box exactly.
 
 kind "pdf" — a complete HTML document in "html", or "from" set to the filename of a pptx or html named in this task (this reply or another planned file).
 In that HTML, list "assets" and write {{asset:id}} where one should appear.
-{"id":"hero","filename":"assets/hero.png","source":{"kind":"place","file":"exact-name.png"}}
-HTML prints in the browser. "from" a pptx prints only where LibreOffice is installed.
+{"id":"<asset id>","filename":"<path in the package>","source":{"kind":"place","file":"<attached filename>"}}
 
-kind "html" — "entry" and "files":[{"path":"index.html","content":"the file"}] plus "assets" as above. {{asset:id}} in the file contents. File contents are written as you wrote them, apart from those tokens.
+kind "html" — "entry" and "files":[{"path":"<path>","content":"<the file>"}] plus "assets" as above. {{asset:id}} in the file contents. File contents are written as you wrote them, apart from those tokens.
 
 kind "svg" — "svg" is the full document.
 Optional tool write_svg: when a mark is large (outlined logos, many paths), call write_svg once per file with the full markup, then in this JSON use the same id and filename and omit "svg" (or leave it empty). Small SVGs may still be inlined here. Tools are optional — ordinary tasks can reply with JSON only and never call them. When several large SVGs are planned, prefer one write_svg per turn (not all marks in one reply), then thin JSON.
 
-kind "image" — "source" is place, generate, or svg.
+kind "image" — "source" is place, generate, or svg. The file is written in the format its filename names.
 
 kind "video" — "clips" in play order.
-{"file":"exact-name.mp4"} places an attached clip.
-{"prompt":"...","duration_sec":6,"aspect":"16:9","references":["exact-name.png"]} generates one. A generated clip is 3–10 seconds and 16:9 or 9:16.
-width, height, and duration_sec on the deliverable are the finished file. The platform joins the clips and fits that file.
+{"file":"<attached filename>"} places an attached clip.
+{"prompt":"<prompt>","duration_sec":<3 to 10>,"aspect":"16:9"|"9:16","references":["<attached picture>"]} generates one (default 5 seconds, 16:9).
+width, height, and duration_sec on the deliverable are the finished file. The platform joins the clips and fits that file, and writes it in the format its filename names.
 "audio":"keep" keeps plate/generator audio through join/fit (only the size/duration/order work you asked for). "audio":"mute" strips audio before that encode. Set this from the job — the platform does not invent mute vs keep.
 
-kind "audio" — attached files play first, then speech, and a bed is mixed under that.
-"places":["exact-name.wav"] or "source":{"kind":"place","file":"exact-name.wav"}
-"speech":[{"text":"...","voice":"Sulafat","style":"..."}]
-"music":{"file":"exact-name.wav"} or "music":{"prompt":"...","instrumental":true,"duration_sec":30}
+kind "audio" — attached files play first, then speech, and music is mixed under that. The file is written in the format its filename names.
+"places":["<attached filename>"] or "source":{"kind":"place","file":"<attached filename>"}
+"speech":[{"text":"<text>","voice":"<voice name>","style":"<delivery>"}] (default voice Sulafat)
+"music":{"file":"<attached filename>"} or "music":{"prompt":"<prompt>","instrumental":<true|false>,"duration_sec":<seconds>} (default instrumental)
+Mix, optional: "speech_level_db":<dB> on the deliverable, and on music "level_db":<dB> and "until":"speech"|"music"|"longest" (how long the mix runs; default speech). With no level set, speech and music are mixed at equal weight.
 
 Attached files inside your markup — write {{inline:exact-name.svg}} where the file should go, in any HTML or SVG you write. The platform pastes the file there, unchanged. An SVG is pasted as its markup, so your CSS can still size and recolour it. Its ids are prefixed, so the same token may be used several times and two marks never collide. A png or jpg becomes a data: URI for src or url(), and so does an SVG when the token sits inside src="…" or url(…). Do not retype the contents of an attached file. Name it.
+
+${generatorFacts()}
 
 Produce the planned files under the planned filenames. One object per file.
 
 Planned files:
 ${plan}
-${otherBlock}
+${sharedBlock}${otherBlock}
 Attached filenames you can place:
 ${attached}`;
 }
@@ -228,8 +268,15 @@ export function composeTaskInstructions(
   planned: unknown[],
   attachedNames: string[],
   brain: BrainLabel = "Argon",
+  shared?: string,
 ): string {
-  return `${composeInstructions(planned, attachedNames, brain)}
+  // Each file's own brief goes in its turn, not here, so this text is the same for every call.
+  const list = planned.map((item) => {
+    if (!item || typeof item !== "object") return item;
+    const { brief: _brief, ...rest } = item as Record<string, unknown>;
+    return rest;
+  });
+  return `${composeInstructions(list, attachedNames, brain, [], shared)}
 Each turn names the planned file or files to write in that reply. Write only those.`;
 }
 
@@ -431,7 +478,11 @@ export async function buildComposition(opts: {
     } else if (item.kind === "video") {
       pending.push(buildVideo(item, ctx, opts.ownerId, opts.onStatus).then((abs) => slots.set("file", Promise.resolve(abs))));
     } else if (item.kind === "audio") {
-      pending.push(buildAudio(item, ctx, opts.onStatus).then((abs) => slots.set("file", Promise.resolve(abs))));
+      pending.push(
+        withGeminiOwner(`${opts.ownerId}:${safeId(item.id)}`, () => buildAudio(item, ctx, opts.onStatus)).then((abs) =>
+          slots.set("file", Promise.resolve(abs)),
+        ),
+      );
     }
   }
   opts.onStatus?.(`Building ${opts.composition.deliverables.length} file(s)…`);
@@ -442,6 +493,8 @@ export async function buildComposition(opts: {
   for (const row of prepared) {
     if (row.item.kind === "pdf") continue;
     const file = await emitDocument(row.item, row.slots, outDir, opts.onStatus, opts.filesByName);
+    const notes = takePlatformNotes(`${opts.ownerId}:${safeId(row.item.id)}`);
+    if (notes.length) file.notes = [...(file.notes ?? []), ...notes];
     built.push(file);
     const printable = file.printPath ?? file.absPath;
     byFilename.set(file.filename.toLowerCase(), row.item.kind === "html" ? printable : file.absPath);
@@ -452,6 +505,8 @@ export async function buildComposition(opts: {
     const file = await stage(opts.ownerId, `pdf ${row.item.filename}`, () =>
       emitPdf(row.item, row.slots, outDir, byFilename, opts.onStatus, opts.filesByName),
     );
+    const notes = takePlatformNotes(`${opts.ownerId}:${safeId(row.item.id)}`);
+    if (notes.length) file.notes = [...(file.notes ?? []), ...notes];
     built.push(file);
     byFilename.set(file.filename.toLowerCase(), file.absPath);
   }
@@ -601,9 +656,14 @@ function normalizeDeliverable(raw: unknown, index: number): Record<string, unkno
         file,
         instrumental: bool(music.instrumental),
         duration_sec: num(music.duration_sec),
+        level_db: num(music.level_db),
+        until: ["speech", "music", "longest"].includes(String(music.until ?? "").trim().toLowerCase())
+          ? (String(music.until).trim().toLowerCase() as "speech" | "music" | "longest")
+          : undefined,
       };
     }
   }
+  if (num(row.speech_level_db) !== undefined) base.speech_level_db = num(row.speech_level_db);
   return base;
 }
 
@@ -895,6 +955,27 @@ async function buildVideo(
   return abs;
 }
 
+/**
+ * Speech (input 0) with music (input 1) under it.
+ * No level set: the two are averaged, as before. A level set: each input is played at
+ * its own level in dB and summed without averaging, so the numbers mean what they say.
+ * "until" is how long the mix runs: the speech, the music, or whichever is longer.
+ */
+export function mixFilter(item: Pick<CompositionDeliverable, "speech_level_db" | "music">): string {
+  const fmt = "aformat=sample_fmts=s16:sample_rates=44100:channel_layouts=stereo";
+  const speechDb = item.speech_level_db;
+  const musicDb = item.music?.level_db;
+  const levelled = speechDb !== undefined || musicDb !== undefined;
+  const gain = (db: number | undefined) => (levelled ? `,volume=${(db ?? 0).toFixed(2)}dB` : "");
+  const until = item.music?.until ?? "speech";
+  const duration = until === "longest" ? "longest" : "first";
+  // "first" ends with input 0, so for "music" the music goes first.
+  const order = until === "music" ? "[a1][a0]" : "[a0][a1]";
+  return `[0:a]${fmt}${gain(speechDb)}[a0];[1:a]${fmt}${gain(musicDb)}[a1];${order}amix=inputs=2:duration=${duration}:dropout_transition=0${
+    levelled ? ":normalize=0" : ""
+  }`;
+}
+
 async function buildAudio(
   item: CompositionDeliverable,
   ctx: MediaToolContext,
@@ -953,17 +1034,7 @@ async function buildAudio(
   }
   if (speechPath && musicPath) {
     const mixed = path.join(dir, `${safeId(item.id)}-mix.wav`);
-    await ffmpeg([
-      "-i",
-      speechPath,
-      "-i",
-      musicPath,
-      "-filter_complex",
-      "[0:a]aformat=sample_fmts=s16:sample_rates=44100:channel_layouts=stereo[a0];[1:a]aformat=sample_fmts=s16:sample_rates=44100:channel_layouts=stereo[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=0",
-      "-c:a",
-      "pcm_s16le",
-      mixed,
-    ]);
+    await ffmpeg(["-i", speechPath, "-i", musicPath, "-filter_complex", mixFilter(item), "-c:a", "pcm_s16le", mixed]);
     return mixed;
   }
   const only = speechPath || musicPath;
@@ -1002,8 +1073,13 @@ async function emitDocument(
     const abs = await slots.get("file");
     if (!abs) throw new Error(`${item.filename}: file was not produced`);
     const dest = uniqueDest(outDir, item.filename, path.extname(abs) || extFallback(item.kind));
-    fs.copyFileSync(abs, dest);
-    return { id: item.id, filename: path.basename(dest), absPath: dest };
+    // Written in the format its filename names: Podcast.mp3 is MP3, not WAV under that name.
+    const result = await encodeMediaTo(item.kind, abs, dest, (args) => ffmpeg(args));
+    const built: BuiltFile = { id: item.id, filename: path.basename(dest), absPath: dest };
+    if (result === "unsupported") {
+      built.notes = [`No ${path.extname(dest)} encoder on this worker; the ${path.extname(abs).slice(1)} file was written under this name as it is.`];
+    }
+    return built;
   }
   throw new Error(`${item.filename}: unsupported kind ${item.kind}`);
 }
@@ -1268,8 +1344,8 @@ async function writePptx(
   if (item.font?.trim()) pres.theme = { headFontFace: item.font.trim(), bodyFontFace: item.font.trim() };
 
   const mediaDir = path.join(outDir, ".pptx_media");
-  const inches = (pct: number | undefined, fallback: number, total: number) =>
-    (Math.min(100, Math.max(0, pct ?? fallback)) / 100) * total;
+  // The brain's percentages as given: below 0 or above 100 places the element past the edge.
+  const inches = (pct: number | undefined, fallback: number, total: number) => ((pct ?? fallback) / 100) * total;
   let mediaIndex = 0;
 
   for (let i = 0; i < slides.length; i++) {
@@ -1308,7 +1384,7 @@ async function writePptx(
         ...box,
         isTextBox: true,
         valign: "top",
-        fontSize: Math.min(96, Math.max(8, Math.round(el.size ?? (el.bold ? 28 : 16)))),
+        fontSize: el.size ?? (el.bold ? 28 : 16),
         bold: Boolean(el.bold),
         color: hex6(el.color, "111111"),
         align: el.align === "center" ? "center" : el.align === "right" ? "right" : "left",

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { loadSliceCheckpoint, saveSliceCheckpoint, sliceCheckpointPath, sliceKey } from "../../src/pipeline/taskPipeline";
+import { loadSliceCheckpoint, loadSliceNotes, saveSliceCheckpoint, sliceCheckpointPath, sliceKey } from "../../src/pipeline/taskPipeline";
 import { isKeptTaskMetaFile } from "../../src/pipeline/taskJobs";
 
 const slice = [{ deliverable: "pdf", id: "zone3", filename: "Zone3.pdf", note: "60x18in" }];
@@ -26,6 +26,17 @@ describe("saved brain replies", () => {
     assert.equal(await loadSliceCheckpoint(dir, 0, sliceKey(slice, "gemini-4-argon")), null);
     assert.equal(await loadSliceCheckpoint(dir, 0, sliceKey([{ ...slice[0]!, note: "other" }], "gemini-4-carbon")), null);
     assert.equal(await loadSliceCheckpoint(dir, 1, sliceKey(slice, "gemini-4-carbon")), null);
+  });
+
+  it("keeps the platform notes with the saved reply, so a retry still delivers them", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "slices-"));
+    const key = sliceKey(slice, "m");
+    const notes = { zone3: ["This call also wrote Poster.pdf, which was not planned for this call and not delivered."] };
+    await saveSliceCheckpoint(dir, 0, key, reply as never, notes);
+    assert.deepEqual(loadSliceNotes(dir, 0), notes);
+    await saveSliceCheckpoint(dir, 1, key, reply as never);
+    assert.deepEqual(loadSliceNotes(dir, 1), {});
+    assert.deepEqual(loadSliceNotes(dir, 7), {});
   });
 
   it("a damaged file is ignored", async () => {

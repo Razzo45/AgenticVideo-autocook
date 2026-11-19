@@ -3,6 +3,8 @@
  * Model: gemini-omni-1.1-flash. Video refs / edits capped at 10s; max 3 videos per prompt.
  */
 import fs from "node:fs";
+import { recordPlatformNote } from "./platformNotes";
+import { VIDEO_PROMPT_MAX_CHARS } from "./videoLimits";
 import path from "node:path";
 import { GoogleGenAI, FileState } from "@google/genai";
 import type { OutputResolution } from "./constants";
@@ -184,7 +186,14 @@ async function imagePart(
   onUpload?: (name: string) => void,
   runId?: string,
 ): Promise<ContentPart> {
-  const mime = /\.png$/i.test(img) ? "image/png" : "image/jpeg";
+  // Labelled by the real bytes (references reach here as png, jpeg or webp).
+  const head = fs.readFileSync(img).subarray(0, 16);
+  const mime =
+    head.readUInt32BE(0) === 0x89504e47
+      ? "image/png"
+      : head.toString("latin1", 8, 12) === "WEBP"
+        ? "image/webp"
+        : "image/jpeg";
   const staged = await stageLocalPath(img, mime, { runId, onStatus });
   if (staged.kind === "inline") {
     return { type: "image", data: staged.data, mime_type: mime };
@@ -317,7 +326,12 @@ async function generateOmniVideoAdmitted(opts: Parameters<typeof generateOmniVid
     let textPayload: string;
     if (opts.brainOwnedPrompt) {
       textPayload = opts.prompt.trim();
-      if (textPayload.length > 6000) textPayload = textPayload.slice(0, 6000);
+      if (textPayload.length > VIDEO_PROMPT_MAX_CHARS) {
+        recordPlatformNote(
+          `Video prompt was ${textPayload.length} characters; the generator was sent the first ${VIDEO_PROMPT_MAX_CHARS}.`,
+        );
+        textPayload = textPayload.slice(0, VIDEO_PROMPT_MAX_CHARS);
+      }
     } else {
       const modeHint = uploadedVideos.length
         ? stillsToSend.length
@@ -404,6 +418,11 @@ async function generateOmniVideoAdmitted(opts: Parameters<typeof generateOmniVid
         (opts.firstFramePath && fs.existsSync(opts.firstFramePath) && opts.firstFramePath) ||
         (opts.referenceImagePaths ?? []).find((p) => p && fs.existsSync(p));
       if (!still) throw err;
+      recordPlatformNote(
+        `The generator refused the source footage. This clip was made from the still ${path.basename(still)} with the first ${
+          opts.brainOwnedPrompt ? 2000 : 600
+        } characters of the prompt.`,
+      );
       imageOnly.push(await imagePart(ai, still, opts.onStatus, (n) => uploadedFileNames.push(n)));
       imageOnly.push({
         type: "text",

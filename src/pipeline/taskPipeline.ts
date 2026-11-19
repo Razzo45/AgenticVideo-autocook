@@ -42,6 +42,7 @@ import {
   buildComposition,
   composeInstructions,
   composeTaskInstructions,
+  generatorFacts,
   sliceTurnText,
   parseComposition,
   type Composition,
@@ -197,10 +198,11 @@ export function keepPlannedDeliverables<T extends { id: string; filename: string
 }
 
 /** Identity of one execute call: the planned files it writes and the brain that writes them. */
-export function sliceKey(slice: PlannedDeliverable[], model: string): string {
+export function sliceKey(slice: PlannedDeliverable[], model: string, shared?: string): string {
   const body = JSON.stringify({
     model,
-    files: slice.map((item) => [item.deliverable ?? "", item.id ?? "", item.filename ?? "", item.note ?? ""]),
+    shared: shared ?? "",
+    files: slice.map((item) => [item.deliverable ?? "", item.id ?? "", item.filename ?? "", item.note ?? "", item.brief ?? ""]),
   });
   return crypto.createHash("sha256").update(body).digest("hex").slice(0, 16);
 }
@@ -209,7 +211,12 @@ export function sliceCheckpointPath(dir: string, sliceIndex: number): string {
   return path.join(dir, TASK_SLICES_DIR, `slice_${sliceIndex + 1}.json`);
 }
 
-type SliceCheckpoint = { key: string; deliverables: Composition["deliverables"] };
+type SliceCheckpoint = {
+  key: string;
+  deliverables: Composition["deliverables"];
+  /** Platform notes for these files (dropped extras, a rebuild), by deliverable id. */
+  notes?: Record<string, string[]>;
+};
 
 /** The brain's finished reply for one planned file, saved the moment it is received. */
 export async function saveSliceCheckpoint(
@@ -217,10 +224,12 @@ export async function saveSliceCheckpoint(
   sliceIndex: number,
   key: string,
   deliverables: Composition["deliverables"],
+  notes?: Record<string, string[]>,
 ): Promise<void> {
   const file = sliceCheckpointPath(dir, sliceIndex);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ key, deliverables } satisfies SliceCheckpoint));
+  const body: SliceCheckpoint = { key, deliverables, ...(notes && Object.keys(notes).length ? { notes } : {}) };
+  fs.writeFileSync(file, JSON.stringify(body));
   try {
     // The worker disk does not survive a restart. The bucket copy is what a retry reads.
     await persistRunFile(file);
@@ -230,6 +239,23 @@ export async function saveSliceCheckpoint(
 }
 
 /** A saved reply for this exact slice, or null. A changed plan or brain does not match. */
+/** Notes saved with a slice's reply (read after loadSliceCheckpoint matched it). */
+export function loadSliceNotes(dir: string, sliceIndex: number): Record<string, string[]> {
+  try {
+    const saved = JSON.parse(fs.readFileSync(sliceCheckpointPath(dir, sliceIndex), "utf8")) as SliceCheckpoint;
+    return saved.notes && typeof saved.notes === "object" ? saved.notes : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Add a note for a deliverable id. */
+function addNote(notes: Map<string, string[]>, id: string, text: string): void {
+  const list = notes.get(id) ?? [];
+  list.push(text);
+  notes.set(id, list);
+}
+
 export async function loadSliceCheckpoint(
   dir: string,
   sliceIndex: number,
@@ -306,9 +332,97 @@ function runBrain(run: RunRow): { model: string; label: BrainLabel } {
   return { model, label: brainLabel(model) };
 }
 
-export type TaskDeliverable = { id: string; label: string; path: string };
+export type TaskDeliverable = {
+  id: string;
+  label: string;
+  path: string;
+  /** What the platform did to this file that the brain did not write. Absent when nothing. */
+  notes?: string[];
+};
 
-export type TaskPlan = { deliverables: PlannedDeliverable[] };
+export type TaskPlan = {
+  deliverables: PlannedDeliverable[];
+  /** Decisions every file of the task follows, from the brain's second plan turn. */
+  shared?: string;
+};
+
+/**
+ * The second plan turn. The brain has listed its files; now, still seeing the whole
+ * task, it writes what every file shares and a brief for each one. Each file is later
+ * written in its own call, so these are how one file knows what the others decided.
+ * Everything in them is the brain's; the platform only says how the calls are made.
+ */
+export function briefFollowUp(): string {
+  return `Each planned file will now be written in its own turn. That turn sees the operator message, the attached files, your plan, the shared decisions below, and that file's brief. It does not see the other files.
+Reply with JSON only:
+{"shared":"<the decisions every file follows>","deliverables":[{"id":"<id from your plan>","filename":"<filename from your plan>","brief":"<what this file contains and how it is made>"}]}
+One object per planned file, with the same id and filename. This reply uses this format, not the plan format.
+
+${generatorFacts()}`;
+}
+
+export function applyTaskBriefs(plan: TaskPlan, text: string): TaskPlan {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const raw = fenced ? fenced[1]! : text;
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  const parsed = JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw) as {
+    shared?: unknown;
+    deliverables?: Array<{ id?: unknown; filename?: unknown; brief?: unknown }>;
+  };
+  const rows = Array.isArray(parsed.deliverables) ? parsed.deliverables : [];
+  const key = (v: unknown) => String(v ?? "").trim().toLowerCase();
+  const deliverables = plan.deliverables.map((item, index) => {
+    const match =
+      rows.find((row) => item.id && key(row.id) === key(item.id)) ??
+      rows.find((row) => item.filename && key(row.filename) === key(item.filename)) ??
+      (rows.length === plan.deliverables.length ? rows[index] : undefined);
+    const brief = typeof match?.brief === "string" ? match.brief.trim() : "";
+    return brief ? { ...item, brief } : item;
+  });
+  const shared = typeof parsed.shared === "string" ? parsed.shared.trim() : "";
+  if (!shared && deliverables.every((item) => !item.brief)) {
+    throw new Error("The brief turn returned no shared decisions and no briefs");
+  }
+  return { deliverables, ...(shared ? { shared } : {}) };
+}
+
+export function hasTaskBriefs(plan: TaskPlan | null | undefined): boolean {
+  return Boolean(plan && (plan.shared || plan.deliverables.some((item) => item.brief)));
+}
+
+/** Second plan turn: continue the plan conversation and ask for the shared decisions and briefs. */
+async function writeTaskBriefs(opts: {
+  run: RunRow;
+  plan: TaskPlan;
+  planReply: string;
+  userParts: Part[];
+  model: string;
+  label: BrainLabel;
+}): Promise<TaskPlan> {
+  const { run, plan, model, label } = opts;
+  await updateRun(run.id, { status: "generating", gate: null, error: `${label} is planning each file…` });
+  const followUp = briefFollowUp();
+  const reply = await stage(
+    run.id,
+    "plan briefs",
+    () =>
+      brainCompletion({
+        model,
+        messages: [{ role: "system", content: planSystem(label) }],
+        userParts: opts.userParts,
+        priorModelText: opts.planReply,
+        followUp,
+        json: true,
+      }),
+    (text) => ({ chars: text.length }),
+  );
+  const withBriefs = applyTaskBriefs(plan, reply);
+  const planFile = taskPlanWritePath(runDir(run.id));
+  fs.writeFileSync(planFile, JSON.stringify(withBriefs, null, 2));
+  await persistRunFile(planFile);
+  return withBriefs;
+}
 
 export async function loadTaskPlan(runId: string): Promise<TaskPlan | null> {
   const file = await ensureTaskPlanFile(runId);
@@ -428,10 +542,11 @@ export async function jobTaskPlan(run: RunRow): Promise<void> {
       }),
     (reply) => ({ chars: reply.length }),
   );
-  const plan = parseTaskPlan(text);
+  const listed = parseTaskPlan(text);
   const planFile = taskPlanWritePath(dir);
-  fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+  fs.writeFileSync(planFile, JSON.stringify(listed, null, 2));
   await persistRunFile(planFile);
+  const plan = await writeTaskBriefs({ run, plan: listed, planReply: text, userParts, model, label });
   const schedule = weightFromDeliverables(plan.deliverables);
   const summary = schedule.parts.map((part) => `${part.count} ${part.deliverable}`).join(", ");
   await enqueueJob(run.id, TASK_EXECUTE_JOB);
@@ -458,8 +573,20 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
 
   const { parts: userParts, placed } = await stage(run.id, "execute inputs", () => operatorParts(run));
   for (const [name, abs] of placed) filesByName.set(name, abs);
-  const plan = await loadTaskPlan(run.id);
+  let plan = await loadTaskPlan(run.id);
+  if (plan?.deliverables.length && !hasTaskBriefs(plan)) {
+    // A plan written before the brief turn existed, or whose brief turn did not finish.
+    plan = await writeTaskBriefs({
+      run,
+      plan,
+      planReply: JSON.stringify({ deliverables: plan.deliverables }),
+      userParts,
+      model,
+      label,
+    });
+  }
   const planned = plan?.deliverables ?? [];
+  const shared = plan?.shared;
   const attachedNames = [...filesByName.keys()].sort();
   await updateRun(run.id, { status: "generating", gate: null, error: `${label} is writing the deliverables…` });
 
@@ -489,7 +616,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   // naming the file to write. Every call of the task shares everything up to that turn,
   // so it can come from a context cache (or Gemini's implicit cache) instead of being
   // sent again for each file, continuation and rebuild.
-  const sharedSystem = composeTaskInstructions(planned, attachedNames, label);
+  const sharedSystem = composeTaskInstructions(planned, attachedNames, label, shared);
   const isGuidedSvg = (slice: PlannedDeliverable[]) => slice.length >= 2 && slice.every(isSvgDeliverable);
   const plainCalls = slices.filter((slice) => !isGuidedSvg(slice)).length;
   let cacheName: string | null = null;
@@ -530,20 +657,25 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
     });
   };
 
+  /** Platform notes per deliverable id, written into deliverables.json with the file. */
+  const fileNotes = new Map<string, string[]>();
+
   const writeSlice = async (slice: PlannedDeliverable[], sliceIndex: number): Promise<Composition["deliverables"]> => {
     const sliceStarted = Date.now();
-    const key = sliceKey(slice, model);
+    const key = sliceKey(slice, model, shared);
     const saved = await loadSliceCheckpoint(dir, sliceIndex, key);
     if (saved) {
       logStage(run.id, `brain ${sliceIndex + 1}/${slices.length} reused`, 0, {
         files: saved.map((item) => item.filename).join(","),
       });
+      for (const [id, list] of Object.entries(loadSliceNotes(dir, sliceIndex))) for (const text of list) addNote(fileNotes, id, text);
       return saved;
     }
+    let rebuiltAfter: string | undefined;
     let continuations = 0;
     let lastFinish: string | undefined;
     const siblings = pdfSiblingFilenames(planned, slice);
-    const system = composeInstructions(slice, attachedNames, label, siblings);
+    const system = composeInstructions(slice, attachedNames, label, siblings, shared);
     const names = slice.map((item) => item.filename || item.deliverable).join(", ");
     const sliceLabel = `${label} ${sliceIndex + 1}/${slices.length} (${names})`;
     const svgSlice = isGuidedSvg(slice);
@@ -608,6 +740,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (isCutOffParseError(message)) throw err;
+      rebuiltAfter = message;
       const ping = `${system}\n\nThe previous reply could not be built (${message}). Reply with the JSON object only.`;
       if (svgSlice) {
         text = await brainWithTools({
@@ -648,7 +781,21 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
       continuations,
       dropped: dropped.length || undefined,
     });
-    await saveSliceCheckpoint(dir, sliceIndex, key, kept);
+    // Recorded on the delivered files so the grader sees what the platform did.
+    const notes: Record<string, string[]> = {};
+    const note = (text: string) => {
+      for (const item of kept) (notes[item.id] ??= []).push(text);
+    };
+    if (rebuiltAfter) note(`The first reply could not be built (${rebuiltAfter.slice(0, 300)}); this file is from the one rebuild.`);
+    if (dropped.length) {
+      note(
+        `This call also wrote ${dropped.map((item) => item.filename).join(", ")}, which ${
+          dropped.length === 1 ? "was" : "were"
+        } not planned for this call and not delivered.`,
+      );
+    }
+    for (const [id, list] of Object.entries(notes)) for (const text of list) addNote(fileNotes, id, text);
+    await saveSliceCheckpoint(dir, sliceIndex, key, kept, notes);
     return kept;
   };
 
@@ -660,7 +807,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   let pendingCalls = 0;
   for (const [sliceIndex, slice] of slices.entries()) {
     if (isGuidedSvg(slice)) continue;
-    if (!(await loadSliceCheckpoint(dir, sliceIndex, sliceKey(slice, model)))) pendingCalls += 1;
+    if (!(await loadSliceCheckpoint(dir, sliceIndex, sliceKey(slice, model, shared)))) pendingCalls += 1;
   }
   if (shouldCacheTask(userParts, Math.min(plainCalls, pendingCalls))) {
     await updateRun(run.id, { error: `${label} is caching the task files…` });
@@ -695,11 +842,14 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   // Two calls can still land on one filename. Keep the first.
   for (let i = merged.length - 1; i >= 0; i--) {
     const key = merged[i]!.filename.toLowerCase();
-    if (merged.findIndex((item) => item.filename.toLowerCase() === key) !== i) {
+    const first = merged.findIndex((item) => item.filename.toLowerCase() === key);
+    if (first !== i) {
       console.warn(`[task] run=${run.id} duplicate deliverable ${merged[i]!.filename} — dropped`);
+      addNote(fileNotes, merged[first]!.id, `Another file's call also wrote ${merged[i]!.filename}; the first version was delivered.`);
       merged.splice(i, 1);
     }
   }
+
   if (!merged.length) throw new Error(`${label} finished without writing a deliverable`);
 
   const composition: Composition = { deliverables: merged };
@@ -727,7 +877,8 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
 
   const deliverables: TaskDeliverable[] = [];
   for (const file of built) {
-    deliverables.push({ id: file.id, label: file.filename, path: file.absPath });
+    const notes = [...(fileNotes.get(file.id) ?? []), ...(file.notes ?? [])];
+    deliverables.push({ id: file.id, label: file.filename, path: file.absPath, ...(notes.length ? { notes } : {}) });
     await persistRunFile(file.absPath);
     await upsertAsset({
       uniq_id: `${run.id}_${file.id}`,

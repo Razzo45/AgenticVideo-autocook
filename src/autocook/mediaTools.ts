@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { asGeneratorPictures } from "../pipeline/mediaFormat";
 import { GoogleGenAI, Type, type FunctionDeclaration } from "@google/genai";
 import sharp from "sharp";
 import { generateOmniVideo } from "../pipeline/geminiOmni";
@@ -50,7 +51,7 @@ export const MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         references: {
           type: Type.ARRAY,
           items: { type: Type.STRING },
-          description: "Attached filenames to send with this prompt, unchanged.",
+          description: "Attached pictures to send with this prompt. PNG, JPEG and WebP are sent as they are; SVG and GIF are drawn to PNG first.",
         },
         width: { type: Type.NUMBER, description: "Ignored. Call fit_image for exact pixels." },
         height: { type: Type.NUMBER, description: "Ignored. Call fit_image for exact pixels." },
@@ -83,7 +84,7 @@ export const MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "generate_video",
     description:
-      "Generate one MP4. The prompt is sent unchanged. The generator only accepts 3–10 seconds and aspect 16:9 or 9:16. Call fit_video to resize, pad, crop, trim, or loop that file, and join_videos to play clips in order.",
+      "Generate one MP4. The prompt is sent unchanged up to 6000 characters (a longer prompt is cut there). The generator only accepts 3–10 seconds and aspect 16:9 or 9:16. Call fit_video to resize, pad, crop, trim, or loop that file, and join_videos to play clips in order.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -101,7 +102,7 @@ export const MEDIA_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         references: {
           type: Type.ARRAY,
           items: { type: Type.STRING },
-          description: "Attached filenames to send with this prompt, unchanged.",
+          description: "Attached pictures to send with this prompt. PNG, JPEG and WebP are sent as they are; SVG and GIF are drawn to PNG first.",
         },
       },
       required: ["id", "prompt", "filename"],
@@ -228,14 +229,14 @@ function claimRel(ctx: MediaToolContext, filename: string, id: string): string {
   return taken(rel) ? `${stem}-${safeId}-${ctx.staged.size}${ext}` : rel;
 }
 
-async function generatePngBytes(prompt: string, referenceImagePaths: string[] = []): Promise<Buffer> {
+async function generatePngBytes(
+  prompt: string,
+  references: Array<{ path: string; mime: string }> = [],
+): Promise<Buffer> {
   const ai = new GoogleGenAI({ apiKey: requireGeminiKey() });
   const parts: Array<Record<string, unknown>> = [{ text: prompt.trim() }];
-  for (const ref of referenceImagePaths) {
-    if (!ref || !fs.existsSync(ref)) continue;
-    const buf = fs.readFileSync(ref);
-    const mime = /\.png$/i.test(ref) ? "image/png" : "image/jpeg";
-    parts.push({ inlineData: { mimeType: mime, data: buf.toString("base64") } });
+  for (const ref of references) {
+    parts.push({ inlineData: { mimeType: ref.mime, data: fs.readFileSync(ref.path).toString("base64") } });
   }
   const owner = currentGeminiOwnerId();
   return withGeminiAdmission(
@@ -549,7 +550,7 @@ export async function executeMediaTool(
     if (!prompt) throw new Error("generate_image: prompt required");
     const embed = String(args.embed ?? "path") === "data_uri" ? "data_uri" : "path";
     ctx.onStatus?.(toolStatus(ctx, `generate_image (${id})…`));
-    const buf = await generatePngBytes(prompt, namedRefs(args, ctx).filter((p) => /\.(png|jpe?g|webp)$/i.test(p)));
+    const buf = await generatePngBytes(prompt, await asGeneratorPictures(namedRefs(args, ctx), ctx.stagingDir));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     fs.writeFileSync(absPath, buf);
@@ -723,7 +724,7 @@ export async function executeMediaTool(
       duration,
       aspectRatio: aspect,
       brainOwnedPrompt: true,
-      referenceImagePaths: namedRefs(args, ctx).filter((p) => /\.(png|jpe?g|webp)$/i.test(p)),
+      referenceImagePaths: (await asGeneratorPictures(namedRefs(args, ctx), ctx.stagingDir)).map((pic) => pic.path),
       onStatus: ctx.onStatus,
     });
     remember(ctx, {

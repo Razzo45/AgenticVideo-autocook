@@ -1,6 +1,6 @@
 /**
  * PDF export — plan-owned post only (HTML or PPTX → PDF).
- * Tries LibreOffice, then Edge/Chrome headless print-to-PDF for HTML.
+ * HTML prints in Chromium. A PPTX prints in LibreOffice, where it is installed.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -109,11 +109,8 @@ export async function exportPdf(opts: {
   opts.onStatus?.(`Exporting PDF from ${path.basename(opts.sourcePath)}…`);
 
   if (ext === ".html" || ext === ".htm") {
-    const viaLo = await libreOfficeToPdf(opts.sourcePath, opts.outDir);
-    if (viaLo) {
-      if (path.resolve(viaLo) !== path.resolve(outPdf)) fs.renameSync(viaLo, outPdf);
-      return { pdfPath: outPdf, method: "libreoffice" };
-    }
+    // HTML always prints in Chromium, the engine the brain writes for. LibreOffice
+    // rendered the same HTML differently wherever it happened to be installed.
     if (await chromiumHtmlToPdf(opts.sourcePath, outPdf)) {
       return { pdfPath: outPdf, method: "chromium" };
     }
@@ -129,6 +126,8 @@ export async function exportPdf(opts: {
   const note = `PDF export tools unavailable (LibreOffice / Chrome / Edge). Source: ${opts.sourcePath}\n`;
   fs.writeFileSync(outPdf.replace(/\.pdf$/i, ".pdf.txt"), note, "utf8");
   throw new Error(
-    "PDF export failed: install LibreOffice (soffice) or Chrome/Edge for HTML print-to-PDF.",
+    ext === ".html" || ext === ".htm"
+      ? "PDF export failed: Chromium could not print the HTML."
+      : "PDF export failed: printing a deck needs LibreOffice, which is not installed on this worker.",
   );
 }
