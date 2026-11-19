@@ -20,7 +20,8 @@ import { convertImage, encodeMediaTo, extensionFor as imageExtension, formatForF
 import { embeddingAllowed, toEot } from "./eot";
 import { installedFontsLine, libreOfficeBinary } from "./renderEnv";
 import { VIDEO_PROMPT_MAX_CHARS } from "./videoLimits";
-import { takePlatformNotes } from "./platformNotes";
+import { recordPlatformNote, takePlatformNotes } from "./platformNotes";
+import { prepareFonts, substitutionNote } from "./fontFetch";
 
 const execFileAsync = promisify(execFile);
 const EMU_PER_INCH = 914400;
@@ -185,7 +186,9 @@ export function generatorFacts(): string {
 - Music prompts: artist names, record labels and "in the style of …" phrases are removed before sending, and "kids"/"children's" are reworded, because the music model refuses them.
 - PDF: HTML prints in Chromium. ${office ? "A pptx prints through LibreOffice." : "A pdf cannot be made from a pptx on this worker (no LibreOffice); write its HTML instead."}
 - Decks: ${pptxEmbedFonts() ? "an attached font file whose family a deck names is embedded in the deck." : "fonts are not embedded; a viewer without the named family installed substitutes another."}${
-    fonts ? `\n- Fonts installed where HTML, PDF and SVG are drawn: ${fonts}. Any other family falls back to one of these unless its font file is attached and loaded with @font-face.` : ""
+    fonts
+      ? `\n- Fonts where the worker draws (a PDF printed from HTML, a picture drawn from SVG): ${fonts} are installed. Any other family the markup names is fetched by name from the Google Fonts collection before drawing. A family that is neither (a commercial face) is drawn in a substitute, and the substitution is recorded with the file, unless its font file is attached and loaded with @font-face. SVG, HTML and pptx files you deliver are drawn by the viewer, with whatever fonts the viewer has.`
+      : ""
   }`;
 }
 
@@ -492,7 +495,10 @@ export async function buildComposition(opts: {
   const byFilename = new Map<string, string>();
   for (const row of prepared) {
     if (row.item.kind === "pdf") continue;
-    const file = await emitDocument(row.item, row.slots, outDir, opts.onStatus, opts.filesByName);
+    // Owned per deliverable so notes recorded while drawing it (a font substitution) land on it.
+    const file = await withGeminiOwner(`${opts.ownerId}:${safeId(row.item.id)}`, () =>
+      emitDocument(row.item, row.slots, outDir, opts.onStatus, opts.filesByName),
+    );
     const notes = takePlatformNotes(`${opts.ownerId}:${safeId(row.item.id)}`);
     if (notes.length) file.notes = [...(file.notes ?? []), ...notes];
     built.push(file);
@@ -503,7 +509,9 @@ export async function buildComposition(opts: {
   for (const row of prepared) {
     if (row.item.kind !== "pdf") continue;
     const file = await stage(opts.ownerId, `pdf ${row.item.filename}`, () =>
-      emitPdf(row.item, row.slots, outDir, byFilename, opts.onStatus, opts.filesByName),
+      withGeminiOwner(`${opts.ownerId}:${safeId(row.item.id)}`, () =>
+        emitPdf(row.item, row.slots, outDir, byFilename, opts.onStatus, opts.filesByName),
+      ),
     );
     const notes = takePlatformNotes(`${opts.ownerId}:${safeId(row.item.id)}`);
     if (notes.length) file.notes = [...(file.notes ?? []), ...notes];
@@ -1108,6 +1116,28 @@ async function writeImageFile(item: CompositionDeliverable, src: string, outDir:
   return { id: item.id, filename: path.basename(dest), absPath: dest };
 }
 
+/**
+ * Before Chromium prints a page: fetch the families its HTML, CSS and SVG files name,
+ * where they are openly licensed, and record any it has to substitute.
+ */
+async function prepareFontsForPrint(htmlPath: string): Promise<void> {
+  const texts: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    if (depth > 4) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full, depth + 1);
+      else if (/\.(html?|css|svg)$/i.test(entry.name) && fs.statSync(full).size < 20 * 1024 * 1024) {
+        texts.push(fs.readFileSync(full, "utf8"));
+      }
+    }
+  };
+  walk(path.dirname(htmlPath), 0);
+  const report = await prepareFonts(texts);
+  const note = substitutionNote(report, "Chromium");
+  if (note) recordPlatformNote(note);
+}
+
 async function emitPdf(
   item: CompositionDeliverable,
   slots: Map<string, Promise<string>>,
@@ -1124,12 +1154,14 @@ async function emitPdf(
     const htmlPath = path.join(folder, "index.html");
     const placed = await placeAssets(item, slots, folder);
     fs.writeFileSync(htmlPath, expandInlineFiles(substituteAssets(item.html, placed, path.dirname(htmlPath)), filesByName), "utf8");
+    await prepareFontsForPrint(htmlPath);
     const exported = await exportPdf({ sourcePath: htmlPath, outDir: path.dirname(dest), outName: path.basename(dest), onStatus });
     return { id: item.id, filename: path.basename(exported.pdfPath), absPath: exported.pdfPath };
   }
   const from = item.from?.trim().toLowerCase();
   const source = from ? byFilename.get(from) : undefined;
   if (!source) throw new Error(`${item.filename}: from does not match a file in this reply`);
+  if (/\.html?$/i.test(source)) await prepareFontsForPrint(source);
   const exported = await exportPdf({ sourcePath: source, outDir: path.dirname(dest), outName: path.basename(dest), onStatus });
   return { id: item.id, filename: path.basename(exported.pdfPath), absPath: exported.pdfPath };
 }
