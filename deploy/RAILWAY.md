@@ -29,7 +29,7 @@ Web and worker must ship this revision together. New cooks enqueue `task_plan` /
   - `S3_SECRET_ACCESS_KEY=${{autocook.SECRET_ACCESS_KEY}}`
 - `S3_FORCE_PATH_STYLE=0` — Railway buckets use virtual-hosted URLs (set `1` only for path-style providers)
 - `RUNS_DIR` — optional local mirror path (default `/app/runs` or `./runs`)
-- Worker fonts: HTML, PDF and SVG text render with the families installed in `Dockerfile.worker` (Liberation, DejaVu, Noto, Carlito, Caladea, Open Sans, Lato, Roboto). The list is read at runtime and given to the brain
+- Worker fonts: a PDF printed from HTML and a picture drawn from SVG use the families installed in `Dockerfile.worker` (Liberation, DejaVu, Noto, Carlito, Caladea, Open Sans, Lato, Roboto). Any other family the file names is fetched by name from the Google Fonts collection (`raw.githubusercontent.com/google/fonts`) into `FONT_CACHE_DIR` (default the system temp folder) before drawing; the worker needs outbound HTTPS to GitHub. `FONT_FETCH=0` turns fetching off. A family that cannot be had is recorded as a note on the file
 - Local HTML→PDF needs Chrome/Chromium (`CHROMIUM_BIN`); LibreOffice is only used to print a deck
 - `PPTX_EMBED_FONTS` — default off; `1` embeds attached .ttf/.otf faces the deck names, as Embedded OpenType (.fntdata)
 - `GEMINI_FILES_CONCURRENCY=2`, `GEMINI_OWNER_CONCURRENCY=1`

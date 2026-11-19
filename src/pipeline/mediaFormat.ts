@@ -8,6 +8,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { prepareFonts, rendererEnv, requestedFamilies, substitutionNote } from "./fontFetch";
+import { recordPlatformNote } from "./platformNotes";
+
+const execFileAsync = promisify(execFile);
 
 export type ImageFormat = "png" | "jpeg" | "webp" | "gif" | "svg";
 
@@ -74,8 +80,9 @@ export async function convertImage(
   src: string,
   dest: string,
   target: ImageFormat,
-  opts: ConvertOptions = {},
+  options: ConvertOptions = {},
 ): Promise<string | null> {
+  let opts = options;
   const buf = fs.readFileSync(src);
   const actual = sniffImage(buf);
   if (!actual) throw new Error(`${path.basename(src)} is not an image this platform can read`);
@@ -91,16 +98,19 @@ export async function convertImage(
   if (actual === "svg") {
     // No size asked for: the SVG's own size (its width/height, else its viewBox), 1 unit = 1 px.
     // A size asked for: drawn at that size, so it is sharp rather than scaled up from small.
-    const size = svgIntrinsicSize(buf.toString("utf8"));
+    const svgText = buf.toString("utf8");
+    const size = svgIntrinsicSize(svgText);
     const long = size ? Math.max(size.width, size.height) : 0;
     const density = resize && long ? Math.min(MAX_DENSITY, Math.max(1, (72 * Math.max(opts.width!, opts.height!)) / long)) : 72;
-    input = sharp(buf, { density, limitInputPixels: false });
+    const drawn = await drawSvgWithFonts(src, svgText, dest, density, resize ? opts : {});
+    input = drawn ? sharp(drawn, { limitInputPixels: false }) : sharp(buf, { density, limitInputPixels: false });
+    if (drawn && resize) opts = {};
   } else {
     input = sharp(buf, { animated: false, limitInputPixels: MAX_OUTPUT_PIXELS });
   }
-  if (resize) {
-    if (opts.width! * opts.height! > MAX_OUTPUT_PIXELS) throw new Error(`${opts.width}x${opts.height} is too large to render`);
-    input = input.resize(Math.round(opts.width!), Math.round(opts.height!), { fit: "fill" });
+  if (opts.width && opts.height) {
+    if (opts.width * opts.height > MAX_OUTPUT_PIXELS) throw new Error(`${opts.width}x${opts.height} is too large to render`);
+    input = input.resize(Math.round(opts.width), Math.round(opts.height), { fit: "fill" });
   }
   if (target === "png") input = input.png();
   else if (target === "jpeg") input = input.flatten({ background: "#ffffff" }).jpeg({ quality: 92 });
@@ -213,3 +223,39 @@ export async function asGeneratorPictures(paths: string[], workDir: string): Pro
   }
   return out;
 }
+
+
+/**
+ * Draw an SVG to a PNG next to dest, in a child process that sees the fonts this SVG names
+ * (fetched where they can be). Records a note when a family had to be substituted.
+ * Returns the PNG path, or null where fontconfig is not available (then the caller draws in-process).
+ */
+async function drawSvgWithFonts(
+  src: string,
+  svgText: string,
+  dest: string,
+  density: number,
+  size: ConvertOptions,
+): Promise<Buffer | null> {
+  const report = await prepareFonts([svgText]);
+  const note = substitutionNote(report, "The SVG renderer");
+  if (note) recordPlatformNote(note);
+  if (!report.fetched.length && !report.substituted.length && !requestedFamilies(svgText).length) return null;
+  const out = path.join(path.dirname(dest), `.svg-${process.pid}-${Date.now().toString(36)}-${path.basename(dest)}.png`);
+  try {
+    await execFileAsync(
+      process.execPath,
+      [CHILD, JSON.stringify({ input: src, output: out, density, width: size.width, height: size.height })],
+      { env: rendererEnv(), timeout: 120_000, windowsHide: true },
+    );
+  } catch (err) {
+    fs.rmSync(out, { force: true });
+    throw new Error(`Drawing ${path.basename(src)} failed: ${err instanceof Error ? err.message.slice(0, 300) : err}`);
+  }
+  const bytes = fs.readFileSync(out);
+  fs.rmSync(out, { force: true });
+  return bytes;
+}
+
+// Same directory as this file (the worker runs these sources with tsx as CommonJS).
+const CHILD = path.join(__dirname, "rasterizeSvgChild.cjs");

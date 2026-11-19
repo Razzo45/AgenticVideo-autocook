@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { rendererEnv } from "../pipeline/fontFetch";
 
 const execFileAsync = promisify(execFile);
 
@@ -23,9 +24,9 @@ function whichCandidates(names: string[]): string[] {
   return [...names, ...roots];
 }
 
-async function tryExec(bin: string, args: string[]): Promise<boolean> {
+async function tryExec(bin: string, args: string[], env?: NodeJS.ProcessEnv): Promise<boolean> {
   try {
-    await execFileAsync(bin, args, { timeout: 180_000, windowsHide: true });
+    await execFileAsync(bin, args, { timeout: 180_000, windowsHide: true, ...(env ? { env } : {}) });
     return true;
   } catch {
     return false;
@@ -78,9 +79,12 @@ async function chromiumHtmlToPdf(htmlPath: string, outPdf: string): Promise<bool
       "--no-sandbox",
       "--disable-dev-shm-usage",
       "--no-pdf-header-footer",
+      // Wait for what the page loads (web fonts, images) before printing, up to 10 s,
+      // so the PDF does not depend on whether a font arrived in time.
+      "--virtual-time-budget=10000",
       `--print-to-pdf=${outPdf}`,
       fileUrl,
-    ]);
+    ], rendererEnv());
     if (ok && fs.existsSync(outPdf) && fs.statSync(outPdf).size > 100) return true;
   }
   return false;
