@@ -115,3 +115,101 @@ export async function convertImage(
   }
   return dest;
 }
+
+/** Encoder arguments for an audio file whose name says this format. */
+const AUDIO_ENCODE: Record<string, string[]> = {
+  ".wav": ["-vn", "-c:a", "pcm_s16le"],
+  ".mp3": ["-vn", "-c:a", "libmp3lame", "-q:a", "2"],
+  ".m4a": ["-vn", "-c:a", "aac", "-b:a", "192k"],
+  ".aac": ["-vn", "-c:a", "aac", "-b:a", "192k"],
+  ".ogg": ["-vn", "-c:a", "libvorbis", "-q:a", "5"],
+  ".opus": ["-vn", "-c:a", "libopus", "-b:a", "128k"],
+  ".flac": ["-vn", "-c:a", "flac"],
+};
+
+/** Encoder arguments for a video file whose name says this container. */
+const VIDEO_ENCODE: Record<string, string[]> = {
+  ".mp4": ["-c", "copy", "-movflags", "+faststart"],
+  ".m4v": ["-c", "copy", "-movflags", "+faststart"],
+  ".mov": ["-c", "copy"],
+  ".mkv": ["-c", "copy"],
+  ".webm": ["-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k"],
+};
+
+/** Formats an audio or video deliverable can be written in. */
+export function mediaEncodeArgs(kind: "audio" | "video", ext: string): string[] | null {
+  const table = kind === "audio" ? AUDIO_ENCODE : VIDEO_ENCODE;
+  return table[ext.toLowerCase()] ?? null;
+}
+
+/**
+ * Write a built audio or video file in the format its filename names (an mp3 named
+ * .mp3, not WAV bytes under that name). Same extension: a plain copy.
+ * An extension with no encoder here is copied as it is; the caller records that.
+ */
+export async function encodeMediaTo(
+  kind: "audio" | "video",
+  src: string,
+  dest: string,
+  run: (args: string[]) => Promise<void>,
+): Promise<"copied" | "encoded" | "unsupported"> {
+  const want = path.extname(dest).toLowerCase();
+  const have = path.extname(src).toLowerCase();
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  if (!want || want === have) {
+    fs.copyFileSync(src, dest);
+    return "copied";
+  }
+  const args = mediaEncodeArgs(kind, want);
+  if (!args) {
+    fs.copyFileSync(src, dest);
+    return "unsupported";
+  }
+  const part = path.join(path.dirname(dest), `.part-${path.basename(dest)}`);
+  try {
+    await run(["-y", "-hide_banner", "-loglevel", "error", "-i", src, ...args, "-f", formatFlag(want), part]);
+    fs.renameSync(part, dest);
+  } finally {
+    fs.rmSync(part, { force: true });
+  }
+  return "encoded";
+}
+
+function formatFlag(ext: string): string {
+  const map: Record<string, string> = {
+    ".wav": "wav", ".mp3": "mp3", ".m4a": "ipod", ".aac": "adts", ".ogg": "ogg", ".opus": "opus",
+    ".flac": "flac", ".mp4": "mp4", ".m4v": "mp4", ".mov": "mov", ".mkv": "matroska", ".webm": "webm",
+  };
+  return map[ext] ?? ext.slice(1);
+}
+
+const GENERATOR_MIME: Partial<Record<ImageFormat, string>> = {
+  png: "image/png",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+};
+
+/**
+ * A reference picture as the generators accept it, labelled by its real bytes.
+ * GIF and SVG are drawn to PNG first; before, they were silently left out,
+ * and a WebP was sent labelled as JPEG. Returns null for a file that is not a picture.
+ */
+export async function asGeneratorPicture(src: string, workDir: string): Promise<{ path: string; mime: string } | null> {
+  if (!fs.existsSync(src)) return null;
+  const actual = sniffImage(fs.readFileSync(src));
+  if (!actual) return null;
+  const mime = GENERATOR_MIME[actual];
+  if (mime) return { path: src, mime };
+  const dest = path.join(workDir, ".refs", `${path.basename(src, path.extname(src))}-${fs.statSync(src).size}.png`);
+  if (!fs.existsSync(dest)) await convertImage(src, dest, "png");
+  return { path: dest, mime: "image/png" };
+}
+
+export async function asGeneratorPictures(paths: string[], workDir: string): Promise<Array<{ path: string; mime: string }>> {
+  const out: Array<{ path: string; mime: string }> = [];
+  for (const p of paths) {
+    const pic = await asGeneratorPicture(p, workDir);
+    if (pic) out.push(pic);
+  }
+  return out;
+}

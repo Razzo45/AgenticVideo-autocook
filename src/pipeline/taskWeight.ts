@@ -39,6 +39,8 @@ export type PlannedDeliverable = {
   filename?: string;
   note?: string;
   count?: number;
+  /** The brain's own brief for this file, written in the second plan turn. */
+  brief?: string;
 };
 
 const MAX_PER_DELIVERABLE = 12;
