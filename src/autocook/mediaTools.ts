@@ -834,9 +834,29 @@ export async function executeMediaTool(
   }
 
   if (name === "join_videos") {
-    const filename = claimRel(ctx, String(args.filename ?? `assets/${id}.mp4`), id);
     const clips = Array.isArray(args.clips) ? args.clips.map((clip) => String(clip)) : [];
-    if (clips.length < 2 || clips.length > 12) throw new Error("join_videos needs 2–12 clips");
+    if (clips.length < 2) throw new Error("join_videos needs at least 2 clips");
+    // One ffmpeg graph stays at 12 inputs. A longer film is joined in groups, then those groups are joined.
+    if (clips.length > 12) {
+      const parts: string[] = [];
+      const stem = id.replace(/[^\w.-]+/g, "_").slice(0, 40) || "join";
+      for (let i = 0; i < clips.length; i += 12) {
+        const batch = clips.slice(i, i + 12);
+        if (batch.length === 1) {
+          parts.push(batch[0]!);
+          continue;
+        }
+        const partId = `${stem}-n${clips.length}-at${i}`;
+        await executeMediaTool(
+          "join_videos",
+          { id: partId, clips: batch, filename: `slots/${partId}.mp4`, audio: args.audio },
+          ctx,
+        );
+        parts.push(partId);
+      }
+      return executeMediaTool("join_videos", { id, clips: parts, filename: args.filename, audio: args.audio }, ctx);
+    }
+    const filename = claimRel(ctx, String(args.filename ?? `assets/${id}.mp4`), id);
     const sources = clips.map((clip) => resolveSource(ctx, clip));
     const first = await probeSource(sources[0]!);
     const outW = evenPixels(first.width || 1280);
@@ -844,6 +864,8 @@ export async function executeMediaTool(
     // Normalize fps — concat fails when Omni (often 24) meets plate footage (often 25).
     const fps = first.fps && first.fps > 0 ? Math.round(first.fps * 1000) / 1000 : 24;
     const probes = await Promise.all(sources.map((src) => probeSource(src)));
+    const totalSec = probes.reduce((sum, probe) => sum + (probe.duration && probe.duration > 0 ? probe.duration : 10), 0);
+    const joinTimeoutMs = Math.min(60 * 60_000, Math.max(JOIN_VIDEOS_TIMEOUT_MS, Math.ceil(totalSec * 4) * 1000));
     const audio = audioMode(args.audio);
     const audioCount = probes.filter((probe) => probe.hasAudio).length;
     let withAudio = false;
@@ -885,7 +907,7 @@ export async function executeMediaTool(
           "-r",
           String(fps),
         ],
-        JOIN_VIDEOS_TIMEOUT_MS,
+        joinTimeoutMs,
       ),
     );
     const probed = await probeSource(absPath);

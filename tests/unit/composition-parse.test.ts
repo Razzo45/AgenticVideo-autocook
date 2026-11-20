@@ -155,6 +155,21 @@ describe("composition parse", () => {
     assert.equal(composition.deliverables[0]?.slides?.[0]?.elements[1]?.source?.file, "logo.png");
   });
 
+  it("accepts a video made of more than 12 clips", () => {
+    const composition = parseComposition(
+      JSON.stringify({
+        deliverables: [
+          {
+            kind: "video",
+            filename: "Film.mp4",
+            clips: Array.from({ length: 35 }, (_, index) => ({ prompt: `plate ${index + 1}`, duration_sec: 10 })),
+          },
+        ],
+      }),
+    );
+    assert.equal(composition.deliverables[0]?.clips?.length, 35);
+  });
+
   it("rejects a reply that cannot be built", () => {
     const cases: Array<[string, RegExp]> = [
       [JSON.stringify({ deliverables: [{ kind: "docx", filename: "a.docx" }] }), /Unknown deliverable kind/],
@@ -173,12 +188,6 @@ describe("composition parse", () => {
       [JSON.stringify({ deliverables: [{ kind: "svg", filename: "x.svg" }] }), /SVG needs/],
       [JSON.stringify({ deliverables: [{ kind: "image", filename: "x.png" }] }), /image needs a source/],
       [JSON.stringify({ deliverables: [{ kind: "video", filename: "x.mp4" }] }), /video needs clips/],
-      [
-        JSON.stringify({
-          deliverables: [{ kind: "video", filename: "x.mp4", clips: Array.from({ length: 13 }, () => ({ file: "a.mp4" })) }],
-        }),
-        /at most 12/,
-      ],
       [JSON.stringify({ deliverables: [{ kind: "audio", filename: "x.wav" }] }), /audio needs/],
       ["not json", /did not parse/],
     ];

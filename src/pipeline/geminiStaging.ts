@@ -37,6 +37,16 @@ export function sha256File(filePath: string): string {
   return hash.digest("hex");
 }
 
+function sha256FileStream(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+    stream.on("error", reject);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
 export function sha256Bytes(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
@@ -192,7 +202,9 @@ export async function lookupActiveFileUri(digest: string): Promise<string | null
 }
 
 async function stagedFileUriOnce(input: {
-  bytes: Buffer;
+  bytes?: Buffer;
+  filePath?: string;
+  size: number;
   mime: string;
   sha256: string;
   name: string;
@@ -203,11 +215,13 @@ async function stagedFileUriOnce(input: {
     input.onStatus?.(`Reusing staged Gemini file for ${input.name}…`);
     return live;
   }
-  input.onStatus?.(`Staging ${input.name} to Gemini Files (${Math.round(input.bytes.length / 1024)} KB)…`);
+  input.onStatus?.(`Staging ${input.name} to Gemini Files (${Math.round(input.size / 1024)} KB)…`);
   const uploaded = await withGeminiAdmission("files", async () => {
-    const blob = new Blob([new Uint8Array(input.bytes)], { type: input.mime });
+    const file = input.filePath
+      ? input.filePath
+      : new Blob([new Uint8Array(input.bytes!)], { type: input.mime });
     return ai().files.upload({
-      file: blob,
+      file,
       config: { mimeType: input.mime, displayName: input.name.slice(0, 120) },
     });
   });
@@ -230,14 +244,15 @@ async function stagedFileUriOnce(input: {
     sha256: input.sha256,
     uri: file.uri,
     mime: input.mime,
-    size: input.bytes.length,
+    size: input.size,
     expires_at: expiresAt,
   });
   return file.uri;
 }
 
 export async function stagedFileUri(input: {
-  bytes: Buffer;
+  bytes?: Buffer;
+  filePath?: string;
   mime: string;
   sha256: string;
   name: string;
@@ -245,7 +260,9 @@ export async function stagedFileUri(input: {
 }): Promise<string> {
   const pending = stagingInFlight.get(input.sha256);
   if (pending) return pending;
-  const work = stagedFileUriOnce(input);
+  const size = input.bytes?.length ?? (input.filePath ? fs.statSync(input.filePath).size : 0);
+  if (!input.bytes && !input.filePath) throw new Error(`No bytes to stage for ${input.name}`);
+  const work = stagedFileUriOnce({ ...input, size });
   stagingInFlight.set(input.sha256, work);
   try {
     return await work;
@@ -260,14 +277,15 @@ export async function stageLocalPath(
   mime: string,
   opts?: { forceStage?: boolean; runId?: string; onStatus?: (m: string) => void },
 ): Promise<StagedMedia> {
-  const buf = fs.readFileSync(filePath);
-  const digest = sha256Bytes(buf);
+  const size = fs.statSync(filePath).size;
   const label = path.basename(filePath);
-  if (!opts?.forceStage && shouldInlineMedia(mime, buf.length)) {
+  if (!opts?.forceStage && shouldInlineMedia(mime, size)) {
+    const buf = fs.readFileSync(filePath);
     return { kind: "inline", mime, data: buf.toString("base64"), label };
   }
+  const digest = await sha256FileStream(filePath);
   const uri = await stagedFileUri({
-    bytes: buf,
+    filePath,
     mime,
     sha256: digest,
     name: label,

@@ -535,9 +535,6 @@ function assertBuildable(composition: Composition): void {
     if (item.kind === "svg" && !item.svg?.trim()) throw new Error(`${item.filename}: SVG needs the document`);
     if (item.kind === "image" && !item.source) throw new Error(`${item.filename}: an image needs a source`);
     if (item.kind === "video" && !item.clips?.length) throw new Error(`${item.filename}: a video needs clips`);
-    if (item.kind === "video" && item.clips && item.clips.length > 12) {
-      throw new Error(`${item.filename}: a video can join at most 12 clips`);
-    }
     if (item.kind === "video") {
       for (const [index, clip] of (item.clips ?? []).entries()) {
         if (!clip.prompt?.trim() && !clip.file?.trim()) {
