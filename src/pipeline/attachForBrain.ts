@@ -16,8 +16,6 @@ export type TaskAttachment =
   | { kind: "file"; label: string; mime: string; path: string; forceStage?: boolean };
 
 const TEXT_MAX_CHARS = 80_000;
-const MEDIA_MAX_BYTES = 200 * 1024 * 1024;
-const ARCHIVE_MAX_BYTES = 300 * 1024 * 1024;
 const INLINE_IMAGE_MAX = 12 * 1024 * 1024;
 
 const IMAGE_MIME: Record<string, string> = {
@@ -143,9 +141,6 @@ export async function classifyAttachment(input: {
   }
   if (ext === "zip") return zipPieces(input.name, input.filePath, input.spillDir, label, depth, input.placed);
   if (MEDIA_MIME[ext]) {
-    if (size > MEDIA_MAX_BYTES) {
-      return [note(label, `It is ${size} bytes, stored with the task, and too large to play inside this reading.`)];
-    }
     return [{ kind: "file", label, mime: MEDIA_MIME[ext]!, path: input.filePath, forceStage: true }];
   }
   if (FONT_EXT.has(ext)) {
@@ -196,15 +191,9 @@ async function zipPieces(
     .sort((a, b) => a.name.localeCompare(b.name));
   const listing = entries.map((entry) => entry.name).join(", ") || "(empty)";
   const out: TaskAttachment[] = [note(label, `Archive with ${entries.length} file(s): ${listing}`)];
-  let budget = ARCHIVE_MAX_BYTES;
   for (const entry of entries) {
     const bytes = Buffer.from(await entry.async("uint8array"));
     const innerLabel = `Inside ${name}: ${entry.name}`;
-    if (bytes.length > budget) {
-      out.push(note(innerLabel, "Not attached. The archive is too large to open further."));
-      continue;
-    }
-    budget -= bytes.length;
     const innerPath = spill(spillDir, entry.name, bytes);
     const stem = name.replace(/\.zip$/i, "");
     rememberPlaced(placed, [entry.name, `${stem}/${entry.name}`, `${name}/${entry.name}`], innerPath);

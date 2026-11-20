@@ -31,4 +31,28 @@ describe("attachment placement", () => {
     assert.equal(placed.has("__macosx/._junk"), false);
     assert.match(pieces.map((piece) => (piece.kind === "note" ? piece.text : piece.kind)).join("\n"), /Direction_A\/A-08\.jpg/);
   });
+
+  it("sends video and audio over 200 MB as a staged file", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "autocook-media-"));
+    const video = path.join(dir, "clip.mp4");
+    const fd = fs.openSync(video, "w");
+    try {
+      fs.ftruncateSync(fd, 200 * 1024 * 1024 + 1);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const pieces = await classifyAttachment({
+      name: "clip.mp4",
+      filePath: video,
+      spillDir: path.join(dir, "spill"),
+    });
+    assert.equal(pieces.length, 1);
+    const piece = pieces[0]!;
+    assert.equal(piece.kind, "file");
+    if (piece.kind !== "file") return;
+    assert.equal(piece.forceStage, true);
+    assert.equal(piece.mime, "video/mp4");
+    assert.equal(piece.path, video);
+    assert.equal(piece.label, "Attached file: clip.mp4");
+  });
 });
