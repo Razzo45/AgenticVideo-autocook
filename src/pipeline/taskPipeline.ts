@@ -36,7 +36,7 @@ import { classifyAttachment } from "./attachForBrain";
 import { runDir } from "./paths";
 import { stageLocalPath } from "./geminiStaging";
 import crypto from "node:crypto";
-import { deleteRunPrefix, ensureAbsRunFile, persistRunFile } from "./storage";
+import { ensureAbsRunFile, persistRunFile } from "./storage";
 import { weightFromDeliverables, type PlannedDeliverable } from "./taskWeight";
 import {
   buildComposition,
@@ -894,9 +894,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   fs.writeFileSync(manifest, JSON.stringify(deliverables, null, 2));
   await persistRunFile(manifest);
 
-  // The files exist. The saved replies are no longer needed.
-  fs.rmSync(path.join(dir, TASK_SLICES_DIR), { recursive: true, force: true });
-  await deleteRunPrefix(run.id, TASK_SLICES_DIR).catch(() => undefined);
+  // task_slices stays. Each file is the reply that built that deliverable.
 
   await updateRun(run.id, { status: "exported", counted: 0, gate: null, error: null });
 }

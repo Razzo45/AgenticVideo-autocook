@@ -5,13 +5,14 @@
  *
  * - When a cook finishes: drop staging (shots/inputs/plates/compose_media) from local + bucket.
  *   Keep final.*, the task out/ folder, deliverables.json, and small plan/result JSON for download.
- * - Last interaction older than RUN_TTL_MS (24h): delete the entire run (bucket + local).
+ * - Last interaction older than RUN_TTL_MS (24h): delete the media.
+ *   The run row stays, and so does the audit JSON (the plan, the composition, the saved
+ *   replies, deliverables.json, and the other small plan/result JSON).
  * - Worker also clears local cache after each job once artifacts are committed to S3.
  */
 import fs from "node:fs";
 import path from "node:path";
 import {
-  deleteRunRows,
   getRun,
   listRuns,
   releaseStuckTaskPlanJobs,
@@ -21,14 +22,14 @@ import {
 } from "../db";
 import { RUNS_DIR, runDir } from "./paths";
 import { isKeptTaskMetaFile } from "./taskJobs";
-import { deleteRunObjectsExcept, deleteRunPrefix, storageMode } from "./storage";
+import { deleteRunObjectsExcept, ensureAbsRunFile, persistRunFile, storageMode } from "./storage";
 import { reapGeminiFiles } from "./geminiStaging";
 
 /** How often the worker runs the sweep. It runs beside the claim loop, never inside it. */
 export const HYGIENE_INTERVAL_MS = Number(process.env.HYGIENE_INTERVAL_MS) || 5 * 60_000;
 /** After finish, staging may linger this long if sanitize wasn't called inline. */
 export const STAGING_IDLE_MS = Number(process.env.STAGING_IDLE_MS) || 5 * 60 * 60_000;
-/** Whole run (including download) expires after this since last interaction. */
+/** Media expires after this since last interaction. The run row and the audit JSON stay. */
 export const RUN_TTL_MS = Number(process.env.RUN_TTL_MS) || 24 * 60 * 60_000;
 /** Generating/queued with no job for this long → mark failed (worker lost mid-tool). */
 export const ORPHAN_GENERATING_MS = Number(process.env.ORPHAN_GENERATING_MS) || 10 * 60_000;
@@ -55,9 +56,23 @@ function isFinished(run: RunRow): boolean {
 }
 
 function shouldKeepName(name: string): boolean {
+  return isRunMediaName(name) || isAuditName(name);
+}
+
+/** Downloaded output. The 24h reap removes these. */
+function isRunMediaName(name: string): boolean {
+  return /^final(\.|$)/i.test(name) || name === "out";
+}
+
+/**
+ * Small JSON kept after the reap: what was planned, what the model returned, and what was delivered.
+ * task_slices holds one saved reply per file. audit_retained.json marks a run whose media is already gone.
+ */
+const AUDIT_RETAINED = "audit_retained.json";
+
+export function isAuditName(name: string): boolean {
   return (
-    /^final(\.|$)/i.test(name) ||
-    name === "out" ||
+    name === AUDIT_RETAINED ||
     name === "deliverables.json" ||
     isKeptTaskMetaFile(name) ||
     name === "cook_result.json" ||
@@ -146,12 +161,53 @@ export function alreadySanitized(run: Pick<RunRow, "id" | "status">): boolean {
   return sanitized.get(run.id) === run.status;
 }
 
-export async function deleteEntireRun(runId: string): Promise<void> {
-  await deleteRunPrefix(runId);
+/** Drop everything under a run except the audit JSON. Local, and the bucket when that is the store. */
+export function purgeRunExceptAudit(runId: string): { removed: string[] } {
   const dir = runDir(runId);
-  if (fs.existsSync(dir)) {
-    fs.rmSync(dir, { recursive: true, force: true });
+  const removed: string[] = [];
+  if (!fs.existsSync(dir)) return { removed };
+  for (const name of fs.readdirSync(dir)) {
+    if (isAuditName(name)) continue;
+    try {
+      fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+      removed.push(name);
+    } catch {
+      /* busy file */
+    }
   }
+  return { removed };
+}
+
+export async function deleteEntireRun(runId: string): Promise<void> {
+  purgeRunExceptAudit(runId);
+  if (storageMode() === "s3") {
+    await deleteRunObjectsExcept(runId, isAuditName);
+  }
+}
+
+function auditMarkerPath(runId: string): string {
+  return path.join(runDir(runId), AUDIT_RETAINED);
+}
+
+/** The media for this run was already dropped. The row and the JSON are still there. */
+async function auditAlreadyKept(runId: string): Promise<boolean> {
+  const marker = auditMarkerPath(runId);
+  if (fs.existsSync(marker)) return true;
+  try {
+    await ensureAbsRunFile(marker);
+  } catch {
+    return false;
+  }
+  return fs.existsSync(marker);
+}
+
+async function markAuditKept(runId: string): Promise<void> {
+  const marker = auditMarkerPath(runId);
+  fs.mkdirSync(path.dirname(marker), { recursive: true });
+  if (!fs.existsSync(marker)) {
+    fs.writeFileSync(marker, JSON.stringify({ retained_at: new Date().toISOString() }));
+  }
+  await persistRunFile(marker);
 }
 
 /**
@@ -213,20 +269,16 @@ export async function runHygieneSweep(): Promise<{
     const age = now - touch;
     if (age >= RUN_TTL_MS) {
       if (await runHasBusyJobs(run.id)) continue;
+      if (await auditAlreadyKept(run.id)) continue;
       try {
         await deleteEntireRun(run.id);
+        await markAuditKept(run.id);
       } catch (err) {
-        // Leave the rows so the next sweep retries the bucket delete.
-        console.warn(`[hygiene] delete ${run.id} failed`, err instanceof Error ? err.message : err);
+        // Leave the row. The next sweep retries the media delete.
+        console.warn(`[hygiene] reap ${run.id} failed`, err instanceof Error ? err.message : err);
         continue;
       }
-      try {
-        await deleteRunRows(run.id);
-      } catch {
-        /* already gone */
-      }
       sanitized.delete(run.id);
-      runsDeleted += 1;
       continue;
     }
     // Finished cooks: drop staging from local + bucket; keep finals only.
@@ -248,8 +300,12 @@ export async function runHygieneSweep(): Promise<{
       if (!fs.statSync(abs).isDirectory()) continue;
       const st = fs.statSync(abs);
       if (now - st.mtimeMs >= RUN_TTL_MS) {
-        fs.rmSync(abs, { recursive: true, force: true });
-        runsDeleted += 1;
+        purgeRunExceptAudit(name);
+        const left = fs.existsSync(abs) ? fs.readdirSync(abs) : [];
+        if (!left.some((entry) => isAuditName(entry))) {
+          fs.rmSync(abs, { recursive: true, force: true });
+          runsDeleted += 1;
+        }
       }
     }
   }

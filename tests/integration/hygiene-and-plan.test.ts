@@ -14,6 +14,18 @@ before(async () => {
   process.env.RUNS_DIR = root;
   process.env.SQLITE_PATH = path.join(root, "pipeline.db");
   delete process.env.DATABASE_URL;
+  for (const key of [
+    "S3_BUCKET",
+    "STORAGE_S3_BUCKET",
+    "S3_ACCESS_KEY_ID",
+    "STORAGE_S3_ACCESS_KEY_ID",
+    "AWS_ACCESS_KEY_ID",
+    "S3_SECRET_ACCESS_KEY",
+    "STORAGE_S3_SECRET_ACCESS_KEY",
+    "AWS_SECRET_ACCESS_KEY",
+  ]) {
+    delete process.env[key];
+  }
   const hygiene = await import("../../src/pipeline/hygiene");
   purgeRunStaging = hygiene.purgeRunStaging;
   failOrphanGeneratingRuns = hygiene.failOrphanGeneratingRuns;
@@ -44,6 +56,66 @@ describe("finished-run hygiene", () => {
     assert.equal(fs.existsSync(path.join(dir, "inputs")), false);
     assert.equal(fs.existsSync(path.join(dir, "out", "Deck.pptx")), true);
     assert.equal(fs.existsSync(path.join(dir, "task_plan.json")), true);
+  });
+
+  it("keeps the task json when the run is reaped", async () => {
+    const { purgeRunExceptAudit } = await import("../../src/pipeline/hygiene");
+    const runId = "run_reap_audit";
+    const dir = path.join(root, runId);
+    fs.mkdirSync(path.join(dir, "out"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "inputs"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "task_slices"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "out", "Film.mp4"), "video");
+    fs.writeFileSync(path.join(dir, "inputs", "brief.pdf"), "pdf");
+    fs.writeFileSync(path.join(dir, "final.mp4"), "final");
+    fs.writeFileSync(path.join(dir, "task_plan.json"), "{\"deliverables\":[]}");
+    fs.writeFileSync(path.join(dir, "task_composition.json"), "{\"deliverables\":[]}");
+    fs.writeFileSync(path.join(dir, "deliverables.json"), "[]");
+    fs.writeFileSync(path.join(dir, "task_slices", "slice_1.json"), "{\"deliverables\":[]}");
+
+    const removed = purgeRunExceptAudit(runId).removed.sort();
+    assert.deepEqual(removed, ["final.mp4", "inputs", "out"]);
+    assert.equal(fs.existsSync(path.join(dir, "out")), false);
+    assert.equal(fs.existsSync(path.join(dir, "task_plan.json")), true);
+    assert.equal(fs.existsSync(path.join(dir, "task_composition.json")), true);
+    assert.equal(fs.existsSync(path.join(dir, "deliverables.json")), true);
+    assert.equal(fs.existsSync(path.join(dir, "task_slices", "slice_1.json")), true);
+  });
+
+  it("keeps the run row when the media is reaped", async () => {
+    const { createRun } = await import("../../src/pipeline/orchestrator");
+    const { getDb, getRun, updateRun } = await import("../../src/db/index");
+    const { runHygieneSweep } = await import("../../src/pipeline/hygiene");
+    const { runDir } = await import("../../src/pipeline/paths");
+    const run = await createRun({
+      prompt: "keep this row",
+      category: "Short Drama / Film & TV",
+      duration: 1,
+      aspect: "9:16",
+      pipelineMode: "task",
+      userId: "unit-audit-row",
+    });
+    getDb().prepare("UPDATE jobs SET status='done' WHERE run_id=?").run(run.id);
+    await updateRun(run.id, { status: "exported", error: null });
+    getDb()
+      .prepare("UPDATE runs SET updated_at=? WHERE id=?")
+      .run(new Date(Date.now() - 25 * 60 * 60_000).toISOString(), run.id);
+    const dir = runDir(run.id);
+    fs.mkdirSync(path.join(dir, "out"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "out", "Film.mp4"), "video");
+    fs.writeFileSync(path.join(dir, "task_plan.json"), "{}");
+
+    await runHygieneSweep();
+    const fresh = await getRun(run.id);
+    assert.equal(fresh?.status, "exported");
+    assert.equal(fs.existsSync(path.join(dir, "out")), false);
+    assert.equal(fs.existsSync(path.join(dir, "task_plan.json")), true);
+    assert.equal(fs.existsSync(path.join(dir, "audit_retained.json")), true);
+    const jobs = getDb().prepare("SELECT COUNT(*) AS n FROM jobs WHERE run_id=?").get(run.id) as { n: number };
+    assert.ok(jobs.n >= 1);
+
+    await runHygieneSweep();
+    assert.equal((await getRun(run.id))?.id, run.id);
   });
 });
 
