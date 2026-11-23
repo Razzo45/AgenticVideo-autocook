@@ -16,7 +16,7 @@ import {
 import { BRAIN_MODEL } from "./constants";
 import { brainLabel } from "./brainChoice";
 import { currentGeminiOwnerId, withGeminiAdmission } from "./geminiAdmission";
-import { DELIVERABLE_CONTINUATIONS, INTERRUPTED_FINISH } from "./deliverableReceive";
+import { DELIVERABLE_CONTINUATIONS, DELIVERABLE_MAX_OUTPUT_TOKENS, INTERRUPTED_FINISH } from "./deliverableReceive";
 import { assembleSvgHops, type SvgHopPart } from "./svgHops";
 import { logStage } from "./stageLog";
 import { stagedMarkupNote } from "./stagedMarkup";
@@ -701,6 +701,9 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
           },
         },
         thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+        // Above one streamed hop. At the default cap Carbon stops with MAX_TOKENS and no
+        // continuation token, and the next attempt starts the poster over.
+        maxOutputTokens: DELIVERABLE_MAX_OUTPUT_TOKENS * DELIVERABLE_CONTINUATIONS,
       };
       let calls: SvgCall[] = [];
       let modelParts: Part[] = [];
