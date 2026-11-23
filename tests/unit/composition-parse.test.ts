@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
+import { executeMediaTool } from "../../src/autocook/mediaTools";
 import { pdfSiblingFilenames, plannedExecuteSlices, plannedHtmlTargets, plannedSvgTargets } from "../../src/pipeline/taskPipeline";
 import { composeInstructions, parseComposition } from "../../src/pipeline/composition";
+import { stagedMarkupNote } from "../../src/pipeline/stagedMarkup";
 
 describe("composition parse", () => {
   it("tells the brain about every deliverable kind", () => {
@@ -119,6 +124,50 @@ describe("composition parse", () => {
       { stagedSvg: staged },
     );
     assert.match(composition.deliverables[0]?.svg ?? "", /<svg/);
+  });
+
+  it("replaces a copied staging note with the stored svg", () => {
+    const note = "[staged 25937 chars — already stored by write_svg; do not repeat]";
+    const stored = '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>';
+    const composition = parseComposition(
+      JSON.stringify({
+        deliverables: [{ kind: "svg", id: "flyer", filename: "flyer.svg", svg: note }],
+      }),
+      { stagedSvg: new Map([["flyer", stored]]) },
+    );
+    assert.equal(composition.deliverables[0]?.svg, stored);
+  });
+
+  it("rejects a reply whose svg is only the staging note", () => {
+    const note = "[staged 25937 chars — already stored by write_svg; do not repeat]";
+    assert.throws(
+      () =>
+        parseComposition(
+          JSON.stringify({
+            deliverables: [{ kind: "svg", id: "flyer", filename: "flyer.svg", svg: note }],
+          }),
+        ),
+      /SVG needs the document/,
+    );
+  });
+
+  it("does not overwrite a stored svg with the staging note", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "staged-markup-"));
+    const ctx = { stagingDir: dir, staged: new Map() };
+    const real = '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>';
+    await executeMediaTool("write_svg", { id: "flyer", filename: "flyer.svg", svg: real }, ctx);
+    const abs = ctx.staged.get("flyer")?.absPath;
+    assert.ok(abs);
+    await assert.rejects(
+      () =>
+        executeMediaTool(
+          "write_svg",
+          { id: "flyer", filename: "flyer.svg", svg: stagedMarkupNote("write_svg", real.length) },
+          ctx,
+        ),
+      /staging note/,
+    );
+    assert.equal(fs.readFileSync(abs, "utf8"), real);
   });
 
   it("fills empty html files from staged write_html documents", () => {

@@ -21,6 +21,7 @@ import {
 import type { HtmlMediaAsset } from "../pipeline/schemaDocs";
 import type { BrainLabel } from "../pipeline/brainChoice";
 import { probeFile } from "../pipeline/stitch";
+import { isStagedMarkupNote } from "../pipeline/stagedMarkup";
 
 const execFileAsync = promisify(execFile);
 
@@ -653,6 +654,9 @@ export async function executeMediaTool(
     const filename = claimRel(ctx, String(args.filename ?? `assets/${id}.svg`), id);
     const svg = String(args.svg ?? "").trim();
     if (!svg) throw new Error("write_svg: svg required");
+    if (isStagedMarkupNote(svg)) {
+      throw new Error("write_svg: svg is the staging note, not the document");
+    }
     const embed = String(args.embed ?? "path") === "data_uri" ? "data_uri" : "path";
     ctx.onStatus?.(toolStatus(ctx, `write_svg (${id})…`));
     const absPath = path.join(ctx.stagingDir, filename);
@@ -683,6 +687,9 @@ export async function executeMediaTool(
     const filename = claimRel(ctx, String(args.filename ?? `${id}.html`), id);
     const html = String(args.html ?? "").trim();
     if (!html) throw new Error("write_html: html required");
+    if (isStagedMarkupNote(html)) {
+      throw new Error("write_html: html is the staging note, not the document");
+    }
     const htmlPath = safeRel(String(args.path ?? "index.html").trim() || "index.html");
     ctx.onStatus?.(toolStatus(ctx, `write_html (${id})…`));
     const absPath = path.join(ctx.stagingDir, filename);

@@ -22,6 +22,7 @@ import { installedFontsLine, libreOfficeBinary } from "./renderEnv";
 import { VIDEO_PROMPT_MAX_CHARS } from "./videoLimits";
 import { recordPlatformNote, takePlatformNotes } from "./platformNotes";
 import { prepareFonts, substitutionNote } from "./fontFetch";
+import { isStagedMarkupNote } from "./stagedMarkup";
 
 const execFileAsync = promisify(execFile);
 const EMU_PER_INCH = 914400;
@@ -299,21 +300,28 @@ ${otherBlock}`;
 
 /**
  * Fill empty kind:"svg" bodies from files the brain already wrote with write_svg
- * (same id or filename). Keeps one-shot JSON for small marks; tools for large ones.
+ * (same id or filename). A copied staging note is empty: the stored file is the document.
  */
+function lookupStagedSvg(item: { id: string; filename: string }, stagedSvg: Map<string, string>): string {
+  const byId = stagedSvg.get(item.id);
+  const byFile = stagedSvg.get(item.filename) ?? stagedSvg.get(item.filename.toLowerCase());
+  const svg = (byId ?? byFile ?? "").trim();
+  return svg && !isStagedMarkupNote(svg) ? svg : "";
+}
+
 export function hydrateSvgFromStaged(
   composition: Composition,
   stagedSvg: Map<string, string>,
 ): Composition {
-  if (!stagedSvg.size) return composition;
   return {
     ...composition,
     deliverables: composition.deliverables.map((item) => {
-      if (item.kind !== "svg" || item.svg?.trim()) return item;
-      const byId = stagedSvg.get(item.id);
-      const byFile = stagedSvg.get(item.filename) ?? stagedSvg.get(item.filename.toLowerCase());
-      const svg = (byId ?? byFile ?? "").trim();
-      return svg ? { ...item, svg } : item;
+      if (item.kind !== "svg") return item;
+      const current = item.svg?.trim() ?? "";
+      if (current && !isStagedMarkupNote(current)) return item;
+      const svg = lookupStagedSvg(item, stagedSvg);
+      if (!svg) return isStagedMarkupNote(current) ? { ...item, svg: "" } : item;
+      return { ...item, svg };
     }),
   };
 }
@@ -328,17 +336,22 @@ export function hydrateHtmlFromStaged(
   composition: Composition,
   stagedHtml: Map<string, StagedHtmlFile>,
 ): Composition {
-  if (!stagedHtml.size) return composition;
   return {
     ...composition,
     deliverables: composition.deliverables.map((item) => {
       if (item.kind !== "html") return item;
-      const hasContent = (item.files ?? []).some((file) => file.content.trim());
+      const hasContent = (item.files ?? []).some((file) => {
+        const content = file.content.trim();
+        return content.length > 0 && !isStagedMarkupNote(content);
+      });
       if (hasContent) return item;
       const byId = stagedHtml.get(item.id);
       const byFile = stagedHtml.get(item.filename) ?? stagedHtml.get(item.filename.toLowerCase());
       const staged = byId ?? byFile;
-      if (!staged?.content.trim()) return item;
+      if (!staged?.content.trim() || isStagedMarkupNote(staged.content)) {
+        const files = (item.files ?? []).filter((file) => !isStagedMarkupNote(file.content));
+        return files.length === (item.files ?? []).length ? item : { ...item, files };
+      }
       const entry = item.entry?.trim() || staged.path || "index.html";
       return {
         ...item,
@@ -379,8 +392,8 @@ export function parseComposition(
     throw new Error(`Deliverable JSON did not match the file shape: ${issue}`);
   }
   let data = parsed.data;
-  if (opts?.stagedSvg?.size) data = hydrateSvgFromStaged(data, opts.stagedSvg);
-  if (opts?.stagedHtml?.size) data = hydrateHtmlFromStaged(data, opts.stagedHtml);
+  data = hydrateSvgFromStaged(data, opts?.stagedSvg ?? new Map());
+  data = hydrateHtmlFromStaged(data, opts?.stagedHtml ?? new Map());
   assertBuildable(data);
   if (opts?.filesByName) assertInlineFilesExist(data, opts.filesByName);
   return data;
