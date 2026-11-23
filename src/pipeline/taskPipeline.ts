@@ -357,6 +357,7 @@ export function briefFollowUp(): string {
 Reply with JSON only:
 {"shared":"<the decisions every file follows>","deliverables":[{"id":"<id from your plan>","filename":"<filename from your plan>","brief":"<what this file contains and how it is made>"}]}
 One object per planned file, with the same id and filename. This reply uses this format, not the plan format.
+For an html deliverable, this brief does not list the files inside it or the code in them. Those are written in the deliverable JSON.
 
 ${generatorFacts()}`;
 }

@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { executeMediaTool } from "../../src/autocook/mediaTools";
 import { pdfSiblingFilenames, plannedExecuteSlices, plannedHtmlTargets, plannedSvgTargets } from "../../src/pipeline/taskPipeline";
-import { composeInstructions, parseComposition } from "../../src/pipeline/composition";
+import { composeInstructions, parseComposition, sliceTurnText } from "../../src/pipeline/composition";
 import { stagedMarkupNote } from "../../src/pipeline/stagedMarkup";
 
 describe("composition parse", () => {
@@ -22,6 +22,12 @@ describe("composition parse", () => {
     assert.match(text, /write_svg/);
     assert.match(text, /one write_svg per turn/);
     assert.match(text, /This turn is only the planned file above/);
+    assert.match(text, /Do not add another deliverable/);
+    assert.doesNotMatch(text, /Do not add other files/);
+    assert.match(text, /"files" is every file of this deliverable/);
+    assert.match(text, /The paths in "files" are written in this reply/);
+    assert.match(sliceTurnText([{ deliverable: "html", filename: "index.html" }]), /Do not add another deliverable/);
+    assert.doesNotMatch(sliceTurnText([{ deliverable: "pptx", filename: "Deck.pptx" }]), /Do not add other files/);
     assert.match(text, /another planned file/);
     assert.match(text, /"audio":"keep"/);
     assert.match(text, /"audio":"mute"/);
