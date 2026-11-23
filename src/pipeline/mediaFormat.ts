@@ -65,6 +65,29 @@ const MAX_DENSITY = 100_000;
 /** Sharp's guard is 268M pixels; refuse a size that would exhaust the worker first. */
 const MAX_OUTPUT_PIXELS = 80_000_000;
 
+/**
+ * A private scratch file for one write. Callers of the same dest used to share
+ * `${dest}.part`, then the first to finish deleted it and the other rename threw ENOENT.
+ */
+function scratchPath(dest: string): string {
+  const name = `.${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-${path.basename(dest)}.part`;
+  return path.join(path.dirname(dest), name);
+}
+
+/** Move a finished scratch onto dest. A dest already published by another writer is kept. */
+function commitScratch(tmp: string, dest: string): void {
+  if (!fs.existsSync(tmp)) {
+    if (fs.existsSync(dest)) return;
+    throw Object.assign(new Error(`ENOENT: no such file or directory, rename '${tmp}' -> '${dest}'`), { code: "ENOENT" });
+  }
+  try {
+    fs.renameSync(tmp, dest);
+  } catch (err) {
+    if (fs.existsSync(dest)) return;
+    throw err;
+  }
+}
+
 export type ConvertOptions = {
   /** Exact output pixels, when the plan names them. Otherwise the source's own size. */
   width?: number;
@@ -116,10 +139,10 @@ export async function convertImage(
   else if (target === "jpeg") input = input.flatten({ background: "#ffffff" }).jpeg({ quality: 92 });
   else if (target === "webp") input = input.webp({ quality: 92 });
   else input = input.gif();
-  const tmp = `${dest}.part`;
+  const tmp = scratchPath(dest);
   try {
     await input.toFile(tmp);
-    fs.renameSync(tmp, dest);
+    commitScratch(tmp, dest);
   } finally {
     fs.rmSync(tmp, { force: true });
   }
@@ -175,10 +198,10 @@ export async function encodeMediaTo(
     fs.copyFileSync(src, dest);
     return "unsupported";
   }
-  const part = path.join(path.dirname(dest), `.part-${path.basename(dest)}`);
+  const part = scratchPath(dest);
   try {
     await run(["-y", "-hide_banner", "-loglevel", "error", "-i", src, ...args, "-f", formatFlag(want), part]);
-    fs.renameSync(part, dest);
+    commitScratch(part, dest);
   } finally {
     fs.rmSync(part, { force: true });
   }
