@@ -16,7 +16,8 @@ import {
 import { BRAIN_MODEL } from "./constants";
 import { brainLabel } from "./brainChoice";
 import { currentGeminiOwnerId, withGeminiAdmission } from "./geminiAdmission";
-import { INTERRUPTED_FINISH } from "./deliverableReceive";
+import { DELIVERABLE_CONTINUATIONS, INTERRUPTED_FINISH } from "./deliverableReceive";
+import { assembleSvgHops, type SvgHopPart } from "./svgHops";
 import { logStage } from "./stageLog";
 import { stagedMarkupNote } from "./stagedMarkup";
 import {
@@ -162,9 +163,17 @@ export type BrainText = {
 
 type StreamChunk = {
   text?: string;
-  candidates?: Array<{ finishReason?: unknown }>;
+  candidates?: Array<{ finishReason?: unknown; content?: { parts?: SvgHopPart[] } }>;
   usageMetadata?: BrainUsage;
 };
+
+/** How long one streamed document may run: one hop of silence, then this many hops in all. */
+export function streamedDocumentBudget(): { totalMs: number; silentMs: number } {
+  return {
+    totalMs: BRAIN_STREAM_TIMEOUT_MS * DELIVERABLE_CONTINUATIONS,
+    silentMs: BRAIN_STREAM_TIMEOUT_MS,
+  };
+}
 
 /** Streaming is the default. BRAIN_STREAM=0 goes back to one unary request per call. */
 export function brainStreamEnabled(): boolean {
@@ -190,11 +199,20 @@ export async function consumeBrainStream(opts: {
   idleMs?: number;
   /** False: a broken stream is an error even when text arrived (the caller cannot continue it). */
   keepPartial?: boolean;
+  /**
+   * No bytes yet. Defaults to totalMs, so a short test cap still fails a silent call.
+   * A multi-hop document sets this to one hop and totalMs to the whole document.
+   */
+  silentMs?: number;
+  /** Bytes already gathered outside chunk.text (a write_svg argument streaming in parts). */
+  extraProgress?: () => number;
+  onChunk?: (chunk: StreamChunk) => void;
   /** Test hooks. */
   tickMs?: number;
   graceMs?: number;
 }): Promise<BrainText> {
   const totalMs = opts.totalMs ?? BRAIN_STREAM_TIMEOUT_MS;
+  const silentMs = opts.silentMs ?? totalMs;
   const idleMs = opts.idleMs ?? BRAIN_STREAM_IDLE_MS;
   const cancelled = () =>
     opts.runSignal?.reason instanceof Error ? opts.runSignal.reason : new PlatformFaultError(`${opts.label} aborted`);
@@ -222,15 +240,18 @@ export async function consumeBrainStream(opts: {
   };
   const onRunAbort = () => giveUp("cancelled");
   opts.runSignal?.addEventListener("abort", onRunAbort, { once: true });
+  const progressed = () => text.length + (opts.extraProgress?.() ?? 0);
   const watchdog = setInterval(() => {
     const now = Date.now();
-    if (now - started > totalMs) giveUp(`timed out after ${Math.round(totalMs / 1000)}s`);
-    else if (text && now - lastChunk > idleMs) giveUp(`stalled: no output for ${Math.round(idleMs / 1000)}s`);
+    const chars = progressed();
+    if (!chars && now - started > silentMs) giveUp(`timed out after ${Math.round(silentMs / 1000)}s`);
+    else if (now - started > totalMs) giveUp(`timed out after ${Math.round(totalMs / 1000)}s`);
+    else if (chars && now - lastChunk > idleMs) giveUp(`stalled: no output for ${Math.round(idleMs / 1000)}s`);
     else if (opts.onStatus && now - lastBeat >= 20_000) {
       lastBeat = now;
       const sec = Math.round((now - started) / 1000);
       opts.onStatus(
-        text ? `${opts.label} (writing, ${text.length} characters, ${sec}s)…` : `${opts.label} (thinking, ${sec}s)…`,
+        chars ? `${opts.label} (writing, ${chars} characters, ${sec}s)…` : `${opts.label} (thinking, ${sec}s)…`,
       );
     }
   }, opts.tickMs ?? 5_000);
@@ -239,6 +260,7 @@ export async function consumeBrainStream(opts: {
     const stream = await opts.open(ctl.signal);
     for await (const chunk of stream) {
       lastChunk = Date.now();
+      opts.onChunk?.(chunk);
       const piece = chunk.text;
       if (piece) text += piece;
       const reason = chunk.candidates?.[0]?.finishReason;
@@ -252,7 +274,7 @@ export async function consumeBrainStream(opts: {
     return { text, finishReason: finish, usage };
   } catch (err) {
     if (opts.runSignal?.aborted) throw cancelled();
-    if (text.trim() && opts.keepPartial !== false) {
+    if ((text.trim() || (opts.extraProgress?.() ?? 0) > 0) && opts.keepPartial !== false) {
       const why = stalled ?? (err instanceof Error ? err.message : String(err));
       console.warn(`[brain] ${opts.label} interrupted after ${text.length} chars (${why.slice(0, 200)}) — keeping the text`);
       return { text, finishReason: INTERRUPTED_FINISH, usage };
@@ -347,6 +369,7 @@ export async function brainCompletionText(opts: BrainCompletionOpts): Promise<Br
         runSignal: brainCallSignal(),
         onStatus: opts.onStatus,
         keepPartial: Boolean(opts.continuable),
+        ...streamedDocumentBudget(),
         open: (signal) =>
           ai.models.generateContentStream({
             model,
@@ -609,9 +632,26 @@ function writeSvgMatchesTarget(
   );
 }
 
+function hopParts(chunk: StreamChunk): SvgHopPart[] {
+  return chunk.candidates?.[0]?.content?.parts ?? [];
+}
+
+function svgChars(parts: SvgHopPart[]): number {
+  let n = 0;
+  for (const part of parts) {
+    if (part.text) n += part.text.length;
+    const svg = part.functionCall?.args?.svg;
+    if (typeof svg === "string") n += svg.length;
+  }
+  return n;
+}
+
+type SvgCall = { name?: string; args?: Record<string, unknown>; id?: string };
+
 /**
- * One session for multi-SVG tasks: write_svg one file per turn (forced tool), then thin JSON.
- * Avoids asking the brain for several outlined logos in a single completion.
+ * One session for multi-SVG tasks: one write_svg per file, then thin JSON.
+ * The SVG streams. A hop that ends early is resumed by the API's continuation token
+ * and its bytes are appended. write_svg runs once, when the document is complete.
  */
 export async function brainGuidedWriteSvgThenJson(opts: {
   model?: string;
@@ -649,40 +689,78 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
 
     let landed = false;
     for (let attempt = 0; attempt < perSvgAttempts; attempt++) {
-      opts.onStatus?.(
-        `${label} write_svg ${i + 1}/${opts.svgTargets.length} (${target.filename})…`,
-      );
-      const result = await generateContentBounded(
-        `${label} write_svg ${i + 1}/${opts.svgTargets.length}`,
-        () =>
-          ai.models.generateContent({
-            model,
-            contents,
-            config: {
-              systemInstruction: system,
-              tools: [{ functionDeclarations: writeSvgTools }],
-              toolConfig: {
-                functionCallingConfig: {
-                  mode: FunctionCallingConfigMode.ANY,
-                  allowedFunctionNames: ["write_svg"],
-                },
+      const activity = `${label} write_svg ${i + 1}/${opts.svgTargets.length}`;
+      opts.onStatus?.(`${activity} (${target.filename})…`);
+      const svgConfig = {
+        systemInstruction: system,
+        tools: [{ functionDeclarations: writeSvgTools }],
+        toolConfig: {
+          functionCallingConfig: {
+            mode: FunctionCallingConfigMode.ANY,
+            allowedFunctionNames: ["write_svg"],
+          },
+        },
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+      };
+      let calls: SvgCall[] = [];
+      let modelParts: Part[] = [];
+      if (brainStreamEnabled()) {
+        const gathered: SvgHopPart[] = [];
+        const started = Date.now();
+        const got = await withGeminiAdmission(
+          "brain",
+          () =>
+            consumeBrainStream({
+              label: activity,
+              runSignal: brainCallSignal(),
+              onStatus: opts.onStatus,
+              keepPartial: true,
+              ...streamedDocumentBudget(),
+              extraProgress: () => svgChars(gathered),
+              onChunk: (chunk) => {
+                for (const part of hopParts(chunk)) gathered.push(part);
               },
-              thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
-            },
-          }),
-        opts.onStatus,
-      );
-
-      const calls = result.functionCalls ?? [];
-      const modelParts: Part[] = [];
-      const candidateParts = result.candidates?.[0]?.content?.parts ?? [];
-      if (candidateParts.length) {
-        for (const p of candidateParts) modelParts.push(p as Part);
-      } else if (calls.length) {
-        for (const fc of calls) {
-          modelParts.push({
-            functionCall: { name: fc.name, args: fc.args ?? {}, id: fc.id },
-          } as Part);
+              open: (signal) =>
+                ai.models.generateContentStream({
+                  model,
+                  contents,
+                  config: { ...svgConfig, abortSignal: signal },
+                }) as Promise<AsyncIterable<StreamChunk>>,
+            }),
+          { onStatus: opts.onStatus },
+        );
+        const assembled = assembleSvgHops(gathered);
+        logStage(currentGeminiOwnerId() ?? "-", `gemini ${activity}`, Date.now() - started, {
+          model,
+          mode: "stream",
+          chars: assembled?.svg.length ?? svgChars(gathered),
+          finish: got.finishReason,
+        });
+        if (assembled) {
+          const args = {
+            id: assembled.id || target.id,
+            filename: assembled.filename || target.filename,
+            svg: assembled.svg,
+          };
+          calls = [{ name: "write_svg", args }];
+          modelParts = [{ functionCall: { name: "write_svg", args } } as Part];
+        } else if (got.finishReason === INTERRUPTED_FINISH) {
+          throw new PlatformFaultError(`${activity} ended before the SVG document was finished`);
+        }
+      } else {
+        const result = await generateContentBounded(
+          activity,
+          () => ai.models.generateContent({ model, contents, config: svgConfig }),
+          opts.onStatus,
+        );
+        calls = (result.functionCalls ?? []) as SvgCall[];
+        const candidateParts = result.candidates?.[0]?.content?.parts ?? [];
+        if (candidateParts.length) {
+          for (const p of candidateParts) modelParts.push(p as Part);
+        } else {
+          for (const fc of calls) {
+            modelParts.push({ functionCall: { name: fc.name, args: fc.args ?? {}, id: fc.id } } as Part);
+          }
         }
       }
 
@@ -698,7 +776,7 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
         continue;
       }
 
-      contents.push({ role: "model", parts: modelParts.length ? modelParts : candidateParts });
+      contents.push({ role: "model", parts: modelParts });
       const responseParts: Part[] = [];
       let scrubMarkup = false;
       for (const fc of calls) {
