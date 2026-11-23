@@ -82,6 +82,13 @@ describe("the second plan turn", () => {
     assert.equal(hasTaskBriefs(plan), false);
   });
 
+  it("leaves an html file list to the deliverable and keeps the brief for other kinds", () => {
+    const text = briefFollowUp();
+    assert.match(text, /what this file contains and how it is made/);
+    assert.match(text, /For an html deliverable, this brief does not list the files inside it or the code in them/);
+    assert.match(text, /Those are written in the deliverable JSON/);
+  });
+
   it("refuses an empty brief turn", () => {
     assert.throws(() => applyTaskBriefs(plan, "{}"), /no shared decisions and no briefs/);
   });

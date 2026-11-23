@@ -205,7 +205,7 @@ export function composeInstructions(
   const others = otherPlannedFilenames.map((name) => name.trim()).filter(Boolean);
   const onlyThis =
     planned.length === 1
-      ? `\nThis turn is only the planned file above. Reply with one deliverable for that file. Do not add other files.\n`
+      ? `\nThis turn is only the planned file above. Reply with one deliverable for that file. Do not add another deliverable.\n`
       : "";
   const otherBlock = others.length
     ? `\nOther files named in this task. A pdf may set "from" to one of these filenames. Do not rewrite those files in this reply.\n${others.join("\n")}\n`
@@ -232,7 +232,7 @@ kind "pdf" — a complete HTML document in "html", or "from" set to the filename
 In that HTML, list "assets" and write {{asset:id}} where one should appear.
 {"id":"<asset id>","filename":"<path in the package>","source":{"kind":"place","file":"<attached filename>"}}
 
-kind "html" — "entry" and "files":[{"path":"<path>","content":"<the file>"}] plus "assets" as above. {{asset:id}} in the file contents. File contents are written as you wrote them, apart from those tokens.
+kind "html" — "files" is every file of this deliverable. Each item is {"path":"<path>","content":"<the file>"}. "content" is that file's code. "entry" names the file that opens it, when you set one. "assets" as above. {{asset:id}} in the file contents. File contents are written as you wrote them, apart from those tokens. The planned id and filename stay on this deliverable. The paths in "files" are written in this reply.
 
 kind "svg" — "svg" is the full document.
 Optional tool write_svg: when a mark is large (outlined logos, many paths), call write_svg once per file with the full markup, then in this JSON use the same id and filename and omit "svg" (or leave it empty). Small SVGs may still be inlined here. Tools are optional — ordinary tasks can reply with JSON only and never call them. When several large SVGs are planned, prefer one write_svg per turn (not all marks in one reply), then thin JSON.
@@ -293,7 +293,7 @@ export function sliceTurnText(slice: unknown[], otherPlannedFilenames: string[] 
   const one = slice.length === 1;
   return `Write ${one ? "this planned file" : "these planned files"} now. Reply with one JSON object holding ${
     one ? "one deliverable for it" : "one deliverable per file listed"
-  }. Do not add other files.
+  }. Do not add another deliverable.
 ${JSON.stringify(slice)}
 ${otherBlock}`;
 }
