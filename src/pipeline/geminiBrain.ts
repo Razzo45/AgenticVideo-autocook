@@ -18,6 +18,7 @@ import { brainLabel } from "./brainChoice";
 import { currentGeminiOwnerId, withGeminiAdmission } from "./geminiAdmission";
 import { INTERRUPTED_FINISH } from "./deliverableReceive";
 import { logStage } from "./stageLog";
+import { stagedMarkupNote } from "./stagedMarkup";
 import {
   BRAIN_CALL_TIMEOUT_MS,
   BRAIN_ROUND_TIMEOUT_MS,
@@ -76,7 +77,7 @@ function scrubStagedMarkupArgs(parts: Part[]): Part[] {
     for (const key of ["html", "svg"] as const) {
       const value = args[key];
       if (typeof value !== "string" || value.length <= STAGED_MARKUP_SCRUB_CHARS) continue;
-      args[key] = `[staged ${value.length} chars — already stored by ${call.name}; do not repeat]`;
+      args[key] = stagedMarkupNote(call.name === "write_html" ? "write_html" : "write_svg", value.length);
     }
     return {
       functionCall: {
@@ -725,21 +726,31 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
         }
       }
 
-      const wroteTarget = calls.some(
+      const matchedTarget = calls.some(
         (fc) => fc.name === "write_svg" && writeSvgMatchesTarget((fc.args ?? {}) as Record<string, unknown>, target),
       );
+      const wroteTarget = responseParts.some((part, index) => {
+        const call = calls[index];
+        if (!call || call.name !== "write_svg" || !writeSvgMatchesTarget((call.args ?? {}) as Record<string, unknown>, target)) {
+          return false;
+        }
+        const response = (part as { functionResponse?: { response?: { ok?: boolean } } }).functionResponse?.response;
+        return response?.ok !== false;
+      });
       if (wroteTarget) {
         landed = true;
         break;
       }
-      contents.push({
-        role: "user",
-        parts: [
-          {
-            text: `That write_svg was not for id="${target.id}" / "${target.filename}". Call write_svg once for that exact id and filename.`,
-          },
-        ],
-      });
+      if (!matchedTarget) {
+        contents.push({
+          role: "user",
+          parts: [
+            {
+              text: `That write_svg was not for id="${target.id}" / "${target.filename}". Call write_svg once for that exact id and filename.`,
+            },
+          ],
+        });
+      }
     }
     if (!landed) {
       throw new Error(`${label} did not write_svg for ${target.filename} after ${perSvgAttempts} attempts`);
