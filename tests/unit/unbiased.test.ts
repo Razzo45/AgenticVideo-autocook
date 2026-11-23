@@ -177,6 +177,16 @@ describe("output as the brain wrote it", () => {
     assert.equal(await asGeneratorPicture(path.join(dir, "notes.txt"), dir), null);
   });
 
+  it("two reference conversions of the same file both finish", async () => {
+    const dir = tmp("refs-race-");
+    const svg = path.join(dir, "198c833f-a221-4096-bb4b-442da4ce4f9d_Draft-universe_primary_logo.svg");
+    fs.writeFileSync(svg, `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#111"/></svg>`);
+    const [a, b] = await Promise.all([asGeneratorPicture(svg, dir), asGeneratorPicture(svg, dir)]);
+    assert.equal(a?.path, b?.path);
+    assert.equal(sniffImage(fs.readFileSync(a!.path)), "png");
+    assert.equal(fs.readdirSync(path.join(dir, ".refs")).some((name) => name.endsWith(".part")), false);
+  });
+
   it("platform notes are collected per deliverable", () => {
     recordPlatformNote("cut", "run_n:poster-clip1");
     recordPlatformNote("other", "run_n:flyer-clip1");
