@@ -12,4 +12,4 @@ The same hop loop is the ceiling for the other text deliverables, such as HTML a
 
 Do not raise the unary timer from 13 minutes to 20. That wait is already past the server close. The 20-minute budget is the streamed hop.
 
-Today `brainGuidedWriteSvgThenJson` streams `write_svg`. The document is stored once `assembleSvgHops` sees both the open and close tags. An unfinished document is not written. Text deliverables use the same hop budget inside `consumeBrainStream`.
+Today `brainGuidedWriteSvgThenJson` streams `write_svg` with an output budget of six hops. A hop that ends on the per-request cap continues. The document is stored once `assembleSvgHops` sees both the open and close tags. An unfinished document is not written. Text deliverables use the same time budget inside `consumeBrainStream`.
