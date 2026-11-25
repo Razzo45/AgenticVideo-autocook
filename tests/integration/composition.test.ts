@@ -76,6 +76,12 @@ describe("composition build", () => {
               { type: "image", x: 78, y: 28, w: 16, h: 20, source: { kind: "svg", svg } },
             ],
           },
+          {
+            elements: [
+              { type: "video", x: 8, y: 12, w: 50, h: 50, source: { kind: "place", file: "red.mp4" } },
+              { type: "audio", x: 64, y: 12, w: 24, h: 12, source: { kind: "place", file: "mono.wav" } },
+            ],
+          },
         ],
       },
       {
@@ -159,7 +165,19 @@ describe("composition build", () => {
     assert.match(slide, /102033/);
     assert.match(notes, /Say the quiet part/);
     assert.equal(names.some((name) => /\.(webp|gif|svg)$/i.test(name)), false);
-    assert.equal(names.filter((name) => name.endsWith(".png")).length, 4);
+    assert.equal(names.filter((name) => name.endsWith(".png")).length, 6);
+    const slide2 = await zip.file("ppt/slides/slide2.xml")!.async("string");
+    const rels = await zip.file("ppt/slides/_rels/slide2.xml.rels")!.async("string");
+    const parts = Object.keys(zip.files).filter((name) => name.startsWith("ppt/media/"));
+    const mp4 = parts.find((name) => name.endsWith(".mp4"));
+    const wav = parts.find((name) => name.endsWith(".wav"));
+    assert.match(slide2, /videoFile/);
+    assert.match(rels, /relationships\/video"/);
+    assert.match(rels, /relationships\/audio"/);
+    assert.ok(mp4, parts.join(", "));
+    assert.ok(wav, parts.join(", "));
+    assert.equal((await zip.file(mp4)!.async("nodebuffer")).equals(fs.readFileSync(red)), true);
+    assert.equal((await zip.file(wav)!.async("nodebuffer")).equals(fs.readFileSync(mono)), true);
 
     const site = await JSZip.loadAsync(fs.readFileSync(must("Site.zip")));
     const html = await site.file("index.html")!.async("string");

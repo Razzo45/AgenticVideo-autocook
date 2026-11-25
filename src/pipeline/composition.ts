@@ -48,7 +48,7 @@ const sourceSchema = z.object({
 export type MediaSource = z.infer<typeof sourceSchema>;
 
 const elementSchema = z.object({
-  type: z.enum(["text", "shape", "image"]),
+  type: z.enum(["text", "shape", "image", "video", "audio"]),
   text: z.string().optional(),
   x: z.number().optional(),
   y: z.number().optional(),
@@ -191,7 +191,7 @@ export function generatorFacts(): string {
 - Music prompts: artist names, record labels and "in the style of …" phrases are removed before sending, and "kids"/"children's" are reworded, because the music model refuses them.
 - PDF: HTML prints in Chromium. ${office ? "A pptx prints through LibreOffice." : "A pdf cannot be made from a pptx on this worker (no LibreOffice); write its HTML instead."}
 - Word: HTML is written as a document — headings, paragraphs, lists, tables, and pictures. A named font is stored for the viewer; it is not embedded. A picture with no size that is wider than the text column is scaled to that column, and the scale is recorded with the file.
-- Decks: ${pptxEmbedFonts() ? "an attached font file whose family a deck names is embedded in the deck." : "fonts are not embedded; a viewer without the named family installed substitutes another."}${
+- Decks: ${pptxEmbedFonts() ? "an attached font file whose family a deck names is embedded in the deck." : "fonts are not embedded; a viewer without the named family installed substitutes another."} A slide video or audio element embeds that file. mp4, mov, m4v, mpg, mp3, wav, and m4a are placed as they are. Another container is rewritten so PowerPoint can play it, and the rewrite is recorded with the file.${
     fonts
       ? `\n- Fonts where the worker draws (a PDF printed from HTML, a picture drawn from SVG): ${fonts} are installed. Any other family the markup names is fetched by name from the Google Fonts collection before drawing. A family that is neither (a commercial face) is drawn in a substitute, and the substitution is recorded with the file, unless its font file is attached and loaded with @font-face. SVG, HTML, pptx, and Word files you deliver are drawn by the viewer, with whatever fonts the viewer has.`
       : ""
@@ -232,6 +232,11 @@ Text defaults: size 28 when bold, else 16; color 111111; align left. A font on t
 {"type":"image","x":<number>,"y":<number>,"w":<number>,"h":<number>,"source":{"kind":"generate","prompt":"<prompt>","references":["<attached filename>"],"width":<pixels>,"height":<pixels>,"fit":"contain"|"cover"|"stretch"}}
 {"type":"image","x":<number>,"y":<number>,"w":<number>,"h":<number>,"source":{"kind":"svg","svg":"<svg markup>"}}
 Place a file that is already in the package. generate is for a picture that does not exist yet. svg is markup you write. width and height on a source are the exact pixels (fit default contain, padded white). A picture fills its x, y, w, h box exactly.
+{"type":"video","x":<number>,"y":<number>,"w":<number>,"h":<number>,"source":{"kind":"place","file":"<attached filename>"}}
+{"type":"video","x":<number>,"y":<number>,"w":<number>,"h":<number>,"source":{"kind":"generate","prompt":"<prompt>","duration_sec":<3 to 10>,"aspect":"16:9"|"9:16","references":["<attached picture>"]}}
+{"type":"audio","x":<number>,"y":<number>,"w":<number>,"h":<number>,"source":{"kind":"place","file":"<attached filename>"}}
+{"type":"audio","x":<number>,"y":<number>,"w":<number>,"h":<number>,"source":{"kind":"generate","prompt":"<spoken text or a music prompt>","instrumental":<true|false>}}
+A video or audio element is that file inside the slide. Place uses the attached file. generate makes the clip or the sound. Do not draw a picture of a player in its place.
 
 kind "pdf" — a complete HTML document in "html", or "from" set to the filename of a pptx or html named in this task (this reply or another planned file).
 In that HTML, list "assets" and write {{asset:id}} where one should appear.
@@ -491,7 +496,9 @@ export async function buildComposition(opts: {
     if (item.kind === "pptx") {
       item.slides?.forEach((slide, slideIndex) => {
         slide.elements.forEach((el, elIndex) => {
-          if (el.type === "image" && el.source) queue(`s${slideIndex}e${elIndex}`, el.source);
+          if ((el.type === "image" || el.type === "video" || el.type === "audio") && el.source) {
+            queue(`s${slideIndex}e${elIndex}`, el.source);
+          }
         });
       });
     } else if (item.kind === "html" || ((item.kind === "pdf" || item.kind === "docx") && item.html)) {
@@ -579,6 +586,9 @@ function assertBuildable(composition: Composition): void {
         for (const el of slide.elements) {
           if (el.type === "image" && !el.source) {
             throw new Error(`${item.filename} slide ${index + 1}: an image needs place, generate, or svg`);
+          }
+          if ((el.type === "video" || el.type === "audio") && !el.source) {
+            throw new Error(`${item.filename} slide ${index + 1}: a ${el.type} needs a file or a prompt`);
           }
         }
       }
@@ -714,12 +724,12 @@ function normalizeElement(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== "object") return null;
   const el = raw as Record<string, unknown>;
   const typeRaw = String(el.type ?? "text").trim().toLowerCase();
-  const type = typeRaw === "shape" ? "shape" : typeRaw === "image" || typeRaw === "image_slot" || typeRaw === "picture" ? "image" : "text";
+  const type = elementType(typeRaw);
   let source = el.source && typeof el.source === "object" ? normalizeSource(el.source) : undefined;
-  if (!source && type === "image") {
+  if (!source && (type === "image" || type === "video" || type === "audio")) {
     const prompt = str(el.image_prompt) || str(el.prompt);
     const file = str(el.file) || str(el.image_file);
-    const svg = str(el.svg);
+    const svg = type === "image" ? str(el.svg) : "";
     if (svg) source = normalizeSource({ kind: "svg", svg });
     else if (file && !prompt) source = normalizeSource({ kind: "place", file });
     else if (prompt) {
@@ -733,6 +743,7 @@ function normalizeElement(raw: unknown): Record<string, unknown> | null {
       });
     }
   }
+  if (source && (type === "video" || type === "audio") && !source.media) source = { ...source, media: type };
   return {
     type,
     text: str(el.text),
@@ -1448,6 +1459,18 @@ async function writePptx(
         w: Math.max(0.01, inches(el.w, el.type === "text" ? 90 : 40, widthIn)),
         h: Math.max(0.01, inches(el.h, 20, heightIn)),
       };
+      if (el.type === "video" || el.type === "audio") {
+        if (!el.source) continue;
+        const abs = await slots.get(`s${i}e${e}`);
+        if (!abs) throw new Error(`${item.filename} slide ${i + 1}: ${el.type} was not produced`);
+        mediaIndex += 1;
+        const id = `${safeId(item.id)}-${mediaIndex}`;
+        const where = `${item.filename} slide ${i + 1}`;
+        const packed = await packDeckMedia(abs, mediaDir, id, el.type, where);
+        const cover = el.type === "video" ? await videoCoverData(packed, mediaDir, id, where) : undefined;
+        page.addMedia({ type: el.type, path: packed, ...box, ...(cover ? { cover } : {}) });
+        continue;
+      }
       if (el.type === "image") {
         if (!el.source) continue;
         const abs = await slots.get(`s${i}e${e}`);
@@ -1487,6 +1510,60 @@ async function writePptx(
   const dest = uniqueDest(outDir, item.filename, ".pptx");
   fs.writeFileSync(dest, bytes);
   return { id: item.id, filename: path.basename(dest), absPath: dest };
+}
+
+function elementType(typeRaw: string): "text" | "shape" | "image" | "video" | "audio" {
+  if (typeRaw === "shape") return "shape";
+  if (typeRaw === "image" || typeRaw === "image_slot" || typeRaw === "picture") return "image";
+  if (typeRaw === "video" || typeRaw === "movie" || typeRaw === "clip") return "video";
+  if (typeRaw === "audio" || typeRaw === "sound") return "audio";
+  return "text";
+}
+
+const DECK_VIDEO_EXT = new Set([".mp4", ".m4v", ".mov", ".mpg", ".mpeg"]);
+const DECK_AUDIO_EXT = new Set([".mp3", ".wav", ".m4a"]);
+
+/**
+ * The file a slide media element embeds. A container PowerPoint plays is the attached
+ * bytes. Anything else is rewritten to one it plays, and that rewrite is recorded.
+ */
+async function packDeckMedia(
+  src: string,
+  dir: string,
+  id: string,
+  kind: "video" | "audio",
+  where: string,
+): Promise<string> {
+  const ext = path.extname(src).toLowerCase();
+  const video = /\.(mp4|m4v|mov|mpg|mpeg|webm|mkv|avi)$/i.test(src);
+  const audio = /\.(mp3|wav|m4a|aac|ogg|flac|opus)$/i.test(src);
+  if (kind === "video" && !video) throw new Error(`${where}: ${path.basename(src)} is not a video`);
+  if (kind === "audio" && !audio) throw new Error(`${where}: ${path.basename(src)} is not audio`);
+  if ((kind === "video" ? DECK_VIDEO_EXT : DECK_AUDIO_EXT).has(ext)) return src;
+  fs.mkdirSync(dir, { recursive: true });
+  const dest = path.join(dir, `${id}${kind === "video" ? ".mp4" : ".mp3"}`);
+  if (kind === "video") {
+    await ffmpeg(["-i", src, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", dest]);
+  } else {
+    await ffmpeg(["-i", src, "-vn", "-c:a", "libmp3lame", "-q:a", "2", dest]);
+  }
+  recordPlatformNote(`${where}: ${path.basename(src)} was rewritten to ${path.extname(dest).slice(1)} so PowerPoint can play it`);
+  return dest;
+}
+
+/** The first frame, so the slide shows the video before it plays. */
+async function videoCoverData(src: string, dir: string, id: string, where: string): Promise<string | undefined> {
+  const dest = path.join(dir, `${id}-cover.png`);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    await ffmpeg(["-ss", "0", "-i", src, "-frames:v", "1", dest]);
+    const buf = fs.readFileSync(dest);
+    if (!buf.length) throw new Error("empty frame");
+    return `data:image/png;base64,${buf.toString("base64")}`;
+  } catch {
+    recordPlatformNote(`${where}: the video is embedded; its first frame could not be drawn, so the slide shows a play button until it plays`);
+    return undefined;
+  }
 }
 
 /** PNG or JPEG by the real bytes, so the part's content type matches what is in it. */

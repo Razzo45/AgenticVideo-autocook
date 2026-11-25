@@ -31,6 +31,38 @@ describe("composition parse", () => {
     assert.match(text, /another planned file/);
     assert.match(text, /"audio":"keep"/);
     assert.match(text, /"audio":"mute"/);
+    assert.match(text, /"type":"video"/);
+    assert.match(text, /A video or audio element is that file inside the slide/);
+  });
+
+  it("keeps a slide video and a slide sound as media, not text", () => {
+    const parsed = parseComposition(
+      JSON.stringify({
+        deliverables: [
+          {
+            kind: "pptx",
+            filename: "Deck.pptx",
+            slides: [
+              {
+                elements: [
+                  { type: "video", x: 5, y: 5, w: 40, h: 30, source: { kind: "place", file: "Walkthrough.mp4" } },
+                  { type: "audio", file: "bed.wav", x: 5, y: 40, w: 20, h: 8 },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const elements = parsed.deliverables[0]?.slides?.[0]?.elements ?? [];
+    assert.equal(elements[0]?.type, "video");
+    assert.equal(elements[0]?.source?.kind, "place");
+    assert.equal(elements[0]?.source?.file, "Walkthrough.mp4");
+    assert.equal(elements[0]?.source?.media, "video");
+    assert.equal(elements[1]?.type, "audio");
+    assert.equal(elements[1]?.source?.kind, "place");
+    assert.equal(elements[1]?.source?.file, "bed.wav");
+    assert.equal(elements[1]?.source?.media, "audio");
   });
 
   it("accepts video audio keep or mute from the brain", () => {
