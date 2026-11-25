@@ -65,7 +65,7 @@ A cook has two stages.
 |-------------|--------|
 | svg | 5 |
 | image, png, html | 10 |
-| pdf | 15 |
+| pdf, docx | 15 |
 | pptx, audio | 20 |
 | video | 30 |
 

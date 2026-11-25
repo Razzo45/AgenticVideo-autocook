@@ -96,7 +96,10 @@ function plannedFilenames(items: PlannedDeliverable[]): string[] {
 
 /** Filenames a pdf slice may point at with "from". Other slices get no extra list. */
 export function pdfSiblingFilenames(planned: PlannedDeliverable[], slice: PlannedDeliverable[]): string[] {
-  const wantsFrom = slice.some((item) => String(item.deliverable ?? "").trim().toLowerCase() === "pdf");
+  const wantsFrom = slice.some((item) => {
+    const kind = String(item.deliverable ?? "").trim().toLowerCase();
+    return kind === "pdf" || kind === "docx";
+  });
   if (!wantsFrom) return [];
   const here = new Set(plannedFilenames(slice).map((name) => name.toLowerCase()));
   return plannedFilenames(planned).filter((name) => !here.has(name.toLowerCase()));
@@ -323,7 +326,7 @@ export function plannedHtmlTargets(items: PlannedDeliverable[]): GuidedHtmlTarge
 export function planSystem(label: BrainLabel): string {
   return `You are ${label}. Read the operator message and the attached files.
 Reply with JSON only:
-{"deliverables":[{"deliverable":"image"|"svg"|"html"|"pdf"|"pptx"|"audio"|"video","id":"string","filename":"string","note":"what this file is"}]}
+{"deliverables":[{"deliverable":"image"|"svg"|"html"|"pdf"|"docx"|"pptx"|"audio"|"video","id":"string","filename":"string","note":"what this file is"}]}
 One object per file you will produce. Do not generate the files in this step. Do not rewrite the operator message.`;
 }
 
