@@ -49,7 +49,7 @@ async function makeClip(outPath: string, withAudio: boolean): Promise<void> {
 }
 
 describe("join_videos mixed audio", () => {
-  it("fails clearly when only some clips have audio", async () => {
+  it("keeps audio when only some clips have a track", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "autocook-join-"));
     const stagingDir = path.join(root, "compose_media");
     fs.mkdirSync(stagingDir, { recursive: true });
@@ -91,19 +91,19 @@ describe("join_videos mixed audio", () => {
       namedReferencesOnly: true,
     };
 
-    await assert.rejects(
-      () =>
-        executeMediaTool(
-          "join_videos",
-          {
-            id: "joined",
-            filename: "assets/joined.mp4",
-            clips: ["a", "b"],
-          },
-          ctx,
-        ),
-      /audio keep requires every clip to have audio/i,
+    const result = await executeMediaTool(
+      "join_videos",
+      {
+        id: "joined",
+        filename: "assets/joined.mp4",
+        clips: ["a", "b"],
+        audio: "keep",
+      },
+      ctx,
     );
+    assert.equal(result.ok, true);
+    assert.equal(result.audio, "keep");
+    assert.equal(result.has_audio, true);
   });
 
   it("strips audio when brain asks for mute even if clips have audio", async () => {

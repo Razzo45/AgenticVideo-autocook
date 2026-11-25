@@ -394,13 +394,21 @@ export function buildJoinVideosFilter(opts: {
   height: number;
   fps: number;
   withAudio: boolean;
+  /**
+   * Seconds of silence for a plate that has no audio stream.
+   * null means that plate already has audio. Ignored when withAudio is false.
+   */
+  silence?: Array<number | null>;
 }): string {
-  const { clipCount, width, height, fps, withAudio } = opts;
+  const { clipCount, width, height, fps, withAudio, silence } = opts;
   const chains = Array.from({ length: clipCount }, (_, index) => {
     const video = `[${index}:v]fps=${fps},scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=0x000000,setsar=1,format=yuv420p[v${index}]`;
-    const audio = withAudio
-      ? `;[${index}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a${index}]`
-      : "";
+    const gap = silence?.[index];
+    const audio = !withAudio
+      ? ""
+      : gap != null
+        ? `;anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${gap.toFixed(3)},asetpts=PTS-STARTPTS[a${index}]`
+        : `;[${index}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a${index}]`;
     return video + audio;
   });
   const concatInputs = withAudio
@@ -874,17 +882,11 @@ export async function executeMediaTool(
     const totalSec = probes.reduce((sum, probe) => sum + (probe.duration && probe.duration > 0 ? probe.duration : 10), 0);
     const joinTimeoutMs = Math.min(60 * 60_000, Math.max(JOIN_VIDEOS_TIMEOUT_MS, Math.ceil(totalSec * 4) * 1000));
     const audio = audioMode(args.audio);
-    const audioCount = probes.filter((probe) => probe.hasAudio).length;
-    let withAudio = false;
-    if (audio === "mute") {
-      withAudio = false;
-    } else if (audioCount > 0 && audioCount < probes.length) {
-      throw new Error(
-        `join_videos: audio keep requires every clip to have audio, or none — got ${audioCount}/${probes.length}. Set audio to mute to strip, or give every clip audio.`,
-      );
-    } else {
-      withAudio = audioCount === probes.length && audioCount > 0;
-    }
+    // keep carries a track when any plate has one. A plate with none gets silence of its own length.
+    const withAudio = audio !== "mute" && probes.some((probe) => probe.hasAudio);
+    const silence = probes.map((probe) =>
+      probe.hasAudio ? null : probe.duration && probe.duration > 0 ? probe.duration : 10,
+    );
     ctx.onStatus?.(toolStatus(ctx, `join_videos (${id}, ${clips.length} clips, audio ${audio})…`));
     const absPath = path.join(ctx.stagingDir, filename);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
@@ -894,6 +896,7 @@ export async function executeMediaTool(
       height: outH,
       fps,
       withAudio,
+      silence,
     });
     await withStatusHeartbeat(
       ctx,
