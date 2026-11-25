@@ -26,4 +26,18 @@ describe("join_videos filter graph", () => {
     assert.match(graph, /\[v0\]\[v1\]concat=n=2:v=1:a=0\[v\]/);
     assert.doesNotMatch(graph, /\[a0\]/);
   });
+
+  it("fills a silent plate in the same graph when keep meets mixed audio", () => {
+    const graph = buildJoinVideosFilter({
+      clipCount: 2,
+      width: 1280,
+      height: 720,
+      fps: 24,
+      withAudio: true,
+      silence: [null, 1.25],
+    });
+    assert.match(graph, /\[0:a\]aformat=/);
+    assert.match(graph, /anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=1\.250/);
+    assert.match(graph, /\[v0\]\[a0\]\[v1\]\[a1\]concat=n=2:v=1:a=1\[v\]\[a\]/);
+  });
 });
