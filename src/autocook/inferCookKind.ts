@@ -37,7 +37,7 @@ export function inferCookKind(prompt: string, files: string[] = []): CookKind {
     return "audio";
   }
   if (/\b(docx|word\s*doc)\b/i.test(prompt)) {
-    // DOCX deferred — fall through to html as printable document unless pptx asked.
+    // Single-kind cooks have no Word mode. A task plans deliverable "docx" and the builder writes it.
     return "html";
   }
   return "video";

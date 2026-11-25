@@ -2,7 +2,7 @@
  * Queue cost of one operator task, taken from the brain's deliverable plan.
  * The plan is a text step. Generation waits in line by the sum of that plan.
  *
- * image 10 · svg 5 · html 10 · pdf 15 · pptx 20 · audio 20 · video 30
+ * image 10 · svg 5 · html 10 · pdf 15 · docx 15 · pptx 20 · audio 20 · video 30
  * Three image files = 30. One video and two images = 50.
  */
 
@@ -15,6 +15,7 @@ export const DELIVERABLE_UNITS = {
   svg: 5,
   html: 10,
   pdf: 15,
+  docx: 15,
   pptx: 20,
   audio: 20,
   video: 30,
@@ -58,6 +59,9 @@ const ALIASES: Record<string, DeliverableUnit> = {
   html: "html",
   webpage: "html",
   pdf: "pdf",
+  docx: "docx",
+  word: "docx",
+  worddoc: "docx",
   pptx: "pptx",
   powerpoint: "pptx",
   deck: "pptx",

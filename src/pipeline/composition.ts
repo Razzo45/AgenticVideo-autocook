@@ -23,6 +23,7 @@ import { VIDEO_PROMPT_MAX_CHARS } from "./videoLimits";
 import { recordPlatformNote, takePlatformNotes } from "./platformNotes";
 import { prepareFonts, substitutionNote } from "./fontFetch";
 import { isStagedMarkupNote } from "./stagedMarkup";
+import { htmlToDocx } from "./docxWrite";
 
 const execFileAsync = promisify(execFile);
 const EMU_PER_INCH = 914400;
@@ -109,7 +110,7 @@ const fileSchema = z.object({
 export const deliverableSchema = z.object({
   id: z.string().min(1),
   filename: z.string().min(1),
-  kind: z.enum(["pptx", "pdf", "html", "svg", "image", "video", "audio"]),
+  kind: z.enum(["pptx", "pdf", "docx", "html", "svg", "image", "video", "audio"]),
   font: z.string().optional(),
   width_in: z.number().positive().optional(),
   height_in: z.number().positive().optional(),
@@ -157,6 +158,9 @@ const KIND_ALIASES: Record<string, CompositionDeliverable["kind"]> = {
   deck: "pptx",
   slides: "pptx",
   pdf: "pdf",
+  docx: "docx",
+  word: "docx",
+  worddoc: "docx",
   html: "html",
   webpage: "html",
   website: "html",
@@ -186,9 +190,10 @@ export function generatorFacts(): string {
 - Video clips: 3–10 seconds, 16:9 or 9:16. References are pictures only; an attached video can be placed, fitted and joined, not used as generator input. A video prompt is sent as written up to ${VIDEO_PROMPT_MAX_CHARS} characters; a longer prompt is cut there and the cut is recorded with the deliverable.
 - Music prompts: artist names, record labels and "in the style of …" phrases are removed before sending, and "kids"/"children's" are reworded, because the music model refuses them.
 - PDF: HTML prints in Chromium. ${office ? "A pptx prints through LibreOffice." : "A pdf cannot be made from a pptx on this worker (no LibreOffice); write its HTML instead."}
+- Word: HTML is written as a document — headings, paragraphs, lists, tables, and pictures. A named font is stored for the viewer; it is not embedded. A picture with no size that is wider than the text column is scaled to that column, and the scale is recorded with the file.
 - Decks: ${pptxEmbedFonts() ? "an attached font file whose family a deck names is embedded in the deck." : "fonts are not embedded; a viewer without the named family installed substitutes another."}${
     fonts
-      ? `\n- Fonts where the worker draws (a PDF printed from HTML, a picture drawn from SVG): ${fonts} are installed. Any other family the markup names is fetched by name from the Google Fonts collection before drawing. A family that is neither (a commercial face) is drawn in a substitute, and the substitution is recorded with the file, unless its font file is attached and loaded with @font-face. SVG, HTML and pptx files you deliver are drawn by the viewer, with whatever fonts the viewer has.`
+      ? `\n- Fonts where the worker draws (a PDF printed from HTML, a picture drawn from SVG): ${fonts} are installed. Any other family the markup names is fetched by name from the Google Fonts collection before drawing. A family that is neither (a commercial face) is drawn in a substitute, and the substitution is recorded with the file, unless its font file is attached and loaded with @font-face. SVG, HTML, pptx, and Word files you deliver are drawn by the viewer, with whatever fonts the viewer has.`
       : ""
   }`;
 }
@@ -208,13 +213,13 @@ export function composeInstructions(
       ? `\nThis turn is only the planned file above. Reply with one deliverable for that file. Do not add another deliverable.\n`
       : "";
   const otherBlock = others.length
-    ? `\nOther files named in this task. A pdf may set "from" to one of these filenames. Do not rewrite those files in this reply.\n${others.join("\n")}\n`
+    ? `\nOther files named in this task. A pdf may set "from" to a pptx or html filename here. A docx may set "from" to an html filename here. Do not rewrite those files in this reply.\n${others.join("\n")}\n`
     : "";
   const sharedBlock = shared?.trim() ? `\nDecisions shared by every file of this task (from your plan):\n${shared.trim()}\n` : "";
   return `You are ${brain}. The operator message and the attached files are the whole job.
 Reply with one JSON object and nothing else. This reply is the deliverable. Write the copy, the notes, the layout, the HTML, and the SVG here.
 ${onlyThis}
-{"deliverables":[{"id":"<string>","filename":"<string>","kind":"pptx"|"pdf"|"html"|"svg"|"image"|"video"|"audio"}]}
+{"deliverables":[{"id":"<string>","filename":"<string>","kind":"pptx"|"pdf"|"docx"|"html"|"svg"|"image"|"video"|"audio"}]}
 
 <…> marks a value you choose. A field you leave out takes the default named beside it.
 
@@ -231,6 +236,8 @@ Place a file that is already in the package. generate is for a picture that does
 kind "pdf" — a complete HTML document in "html", or "from" set to the filename of a pptx or html named in this task (this reply or another planned file).
 In that HTML, list "assets" and write {{asset:id}} where one should appear.
 {"id":"<asset id>","filename":"<path in the package>","source":{"kind":"place","file":"<attached filename>"}}
+
+kind "docx" — a complete HTML document in "html", or "from" set to the filename of an html file named in this task (this reply or another planned file). "assets" and {{asset:id}} work the same way as in a pdf. The HTML is written as the Word file: headings, paragraphs, lists, tables, and pictures. CSS page layout is not printed.
 
 kind "html" — "files" is every file of this deliverable. Each item is {"path":"<path>","content":"<the file>"}. "content" is that file's code. "entry" names the file that opens it, when you set one. "assets" as above. {{asset:id}} in the file contents. File contents are written as you wrote them, apart from those tokens. The planned id and filename stay on this deliverable. The paths in "files" are written in this reply.
 
@@ -288,7 +295,7 @@ Each turn names the planned file or files to write in that reply. Write only tho
 export function sliceTurnText(slice: unknown[], otherPlannedFilenames: string[] = []): string {
   const others = otherPlannedFilenames.map((name) => name.trim()).filter(Boolean);
   const otherBlock = others.length
-    ? `\nOther files named in this task. A pdf may set "from" to one of these filenames. Do not rewrite those files in this reply.\n${others.join("\n")}\n`
+    ? `\nOther files named in this task. A pdf may set "from" to a pptx or html filename here. A docx may set "from" to an html filename here. Do not rewrite those files in this reply.\n${others.join("\n")}\n`
     : "";
   const one = slice.length === 1;
   return `Write ${one ? "this planned file" : "these planned files"} now. Reply with one JSON object holding ${
@@ -487,7 +494,7 @@ export async function buildComposition(opts: {
           if (el.type === "image" && el.source) queue(`s${slideIndex}e${elIndex}`, el.source);
         });
       });
-    } else if (item.kind === "html" || (item.kind === "pdf" && item.html)) {
+    } else if (item.kind === "html" || ((item.kind === "pdf" || item.kind === "docx") && item.html)) {
       for (const asset of item.assets ?? []) queue(asset.id, asset.source, asset.filename);
     } else if (item.kind === "image" && item.source) {
       queue("file", item.source, item.filename);
@@ -507,7 +514,7 @@ export async function buildComposition(opts: {
   const built: BuiltFile[] = [];
   const byFilename = new Map<string, string>();
   for (const row of prepared) {
-    if (row.item.kind === "pdf") continue;
+    if (row.item.kind === "pdf" || (row.item.kind === "docx" && !row.item.html?.trim())) continue;
     // Owned per deliverable so notes recorded while drawing it (a font substitution) land on it.
     const file = await withGeminiOwner(`${opts.ownerId}:${safeId(row.item.id)}`, () =>
       emitDocument(row.item, row.slots, outDir, opts.onStatus, opts.filesByName),
@@ -520,10 +527,13 @@ export async function buildComposition(opts: {
     if (file.printPath) byFilename.set(row.item.filename.toLowerCase(), file.printPath);
   }
   for (const row of prepared) {
-    if (row.item.kind !== "pdf") continue;
-    const file = await stage(opts.ownerId, `pdf ${row.item.filename}`, () =>
+    const fromDocx = row.item.kind === "docx" && !row.item.html?.trim();
+    if (row.item.kind !== "pdf" && !fromDocx) continue;
+    const file = await stage(opts.ownerId, `${row.item.kind} ${row.item.filename}`, () =>
       withGeminiOwner(`${opts.ownerId}:${safeId(row.item.id)}`, () =>
-        emitPdf(row.item, row.slots, outDir, byFilename, opts.onStatus, opts.filesByName),
+        row.item.kind === "pdf"
+          ? emitPdf(row.item, row.slots, outDir, byFilename, opts.onStatus, opts.filesByName)
+          : emitDocx(row.item, row.slots, outDir, byFilename, opts.onStatus, opts.filesByName),
       ),
     );
     const notes = takePlatformNotes(`${opts.ownerId}:${safeId(row.item.id)}`);
@@ -543,6 +553,9 @@ function assertBuildable(composition: Composition): void {
     if (item.kind === "pptx" && !item.slides?.length) throw new Error(`${item.filename}: a deck needs slides`);
     if (item.kind === "pdf" && !item.html?.trim() && !item.from?.trim()) {
       throw new Error(`${item.filename}: a PDF needs html, or from set to another file in this reply`);
+    }
+    if (item.kind === "docx" && !item.html?.trim() && !item.from?.trim()) {
+      throw new Error(`${item.filename}: a Word file needs html, or from set to an html file in this reply`);
     }
     if (item.kind === "html" && !item.files?.length) throw new Error(`${item.filename}: HTML needs files`);
     if (item.kind === "svg" && !item.svg?.trim()) throw new Error(`${item.filename}: SVG needs the document`);
@@ -1070,6 +1083,7 @@ async function emitDocument(
   onStatus?.(`Writing ${item.filename}…`);
   if (item.kind === "pptx") return writePptx(item, slots, outDir, filesByName);
   if (item.kind === "html") return writeHtml(item, slots, outDir, filesByName);
+  if (item.kind === "docx") return emitDocx(item, slots, outDir, new Map(), onStatus, filesByName);
   if (item.kind === "svg") {
     const svg = expandInlineFiles(item.svg ?? "", filesByName);
     const named = formatForFilename(item.filename);
@@ -1174,6 +1188,37 @@ async function emitPdf(
   if (/\.html?$/i.test(source)) await prepareFontsForPrint(source);
   const exported = await exportPdf({ sourcePath: source, outDir: path.dirname(dest), outName: path.basename(dest), onStatus });
   return { id: item.id, filename: path.basename(exported.pdfPath), absPath: exported.pdfPath };
+}
+
+async function emitDocx(
+  item: CompositionDeliverable,
+  slots: Map<string, Promise<string>>,
+  outDir: string,
+  byFilename: Map<string, string>,
+  onStatus?: (msg: string) => void,
+  filesByName?: Map<string, string>,
+): Promise<BuiltFile> {
+  onStatus?.(`Writing ${item.filename}…`);
+  const dest = uniqueDest(outDir, item.filename, ".docx");
+  let html = "";
+  let baseDir = outDir;
+  if (item.html?.trim()) {
+    const folder = path.join(outDir, `${safeId(item.id)}-docx`);
+    fs.mkdirSync(folder, { recursive: true });
+    const placed = await placeAssets(item, slots, folder);
+    html = expandInlineFiles(substituteAssets(item.html, placed, folder), filesByName);
+    baseDir = folder;
+  } else {
+    const from = item.from?.trim().toLowerCase();
+    const source = from ? byFilename.get(from) : undefined;
+    if (!source || !/\.html?$/i.test(source)) {
+      throw new Error(`${item.filename}: from does not match an html file in this reply`);
+    }
+    html = expandInlineFiles(fs.readFileSync(source, "utf8"), filesByName);
+    baseDir = path.dirname(source);
+  }
+  fs.writeFileSync(dest, await withoutFolderEntries(await htmlToDocx(html, { baseDir })));
+  return { id: item.id, filename: path.basename(dest), absPath: dest };
 }
 
 async function writeHtml(
@@ -1635,6 +1680,7 @@ function mimeForPath(abs: string): string {
 function extensionFor(kind: CompositionDeliverable["kind"]): string {
   if (kind === "pptx") return "pptx";
   if (kind === "pdf") return "pdf";
+  if (kind === "docx") return "docx";
   if (kind === "svg") return "svg";
   if (kind === "video") return "mp4";
   if (kind === "audio") return "wav";

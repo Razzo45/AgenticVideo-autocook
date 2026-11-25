@@ -54,7 +54,7 @@ const result = await runAutocook({
 Claim logic:
 
 1. `task_plan` is text. The brain names the files. That job can run while a deliverable task is generating.
-2. `task_execute` is the deliverable queue. One of those runs at a time. Weight is the sum of the plan: image 10, svg 5, html 10, pdf 15, pptx 20, audio 20, video 30.
+2. `task_execute` is the deliverable queue. One of those runs at a time. Weight is the sum of the plan: image 10, svg 5, html 10, pdf 15, docx 15, pptx 20, audio 20, video 30.
 3. A run that already finished a generation stage is claimed before a new deliverable task. Among new tasks, lower `task_weight` goes first.
 4. The worker allows the running deliverable task plus one plan read (`maxParallelRuns: 2`).
 

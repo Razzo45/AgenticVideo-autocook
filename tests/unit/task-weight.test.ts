@@ -9,11 +9,12 @@ describe("task weight", () => {
       { deliverable: "image" },
       { deliverable: "html" },
       { deliverable: "pdf" },
+      { deliverable: "docx" },
       { deliverable: "pptx" },
       { deliverable: "audio" },
       { deliverable: "video" },
     ]);
-    assert.equal(schedule.weight, 5 + 10 + 10 + 15 + 20 + 20 + 30);
+    assert.equal(schedule.weight, 5 + 10 + 10 + 15 + 15 + 20 + 20 + 30);
   });
 
   it("accepts aliases and multiplies by count", () => {

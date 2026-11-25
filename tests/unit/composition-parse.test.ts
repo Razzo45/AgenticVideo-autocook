@@ -85,6 +85,15 @@ describe("composition parse", () => {
     assert.deepEqual(pdfSiblingFilenames(planned, [planned[0]!]), []);
   });
 
+  it("lists sibling filenames for a docx slice", () => {
+    const planned = [
+      { deliverable: "html", filename: "Page.html" },
+      { deliverable: "docx", filename: "Note.docx" },
+    ];
+    assert.deepEqual(pdfSiblingFilenames(planned, [planned[1]!]), ["Page.html"]);
+    assert.deepEqual(pdfSiblingFilenames(planned, [planned[0]!]), []);
+  });
+
   it("slices execute so html and video are separate JSON calls", () => {
     const slices = plannedExecuteSlices([
       { deliverable: "html", filename: "hero.html" },
@@ -227,7 +236,7 @@ describe("composition parse", () => {
 
   it("rejects a reply that cannot be built", () => {
     const cases: Array<[string, RegExp]> = [
-      [JSON.stringify({ deliverables: [{ kind: "docx", filename: "a.docx" }] }), /Unknown deliverable kind/],
+      [JSON.stringify({ deliverables: [{ kind: "docx", filename: "a.docx" }] }), /Word file needs html/],
       [
         JSON.stringify({
           deliverables: [
