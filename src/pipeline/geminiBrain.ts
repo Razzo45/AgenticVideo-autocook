@@ -17,7 +17,7 @@ import { BRAIN_MODEL } from "./constants";
 import { brainLabel } from "./brainChoice";
 import { currentGeminiOwnerId, withGeminiAdmission } from "./geminiAdmission";
 import { DELIVERABLE_CONTINUATIONS, DELIVERABLE_MAX_OUTPUT_TOKENS, INTERRUPTED_FINISH } from "./deliverableReceive";
-import { assembleSvgHops, type SvgHopPart } from "./svgHops";
+import { assembleSvgHops, guidedSvgMissText, type SvgHopPart } from "./svgHops";
 import { logStage } from "./stageLog";
 import { stagedMarkupNote } from "./stagedMarkup";
 import {
@@ -707,8 +707,8 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
       };
       let calls: SvgCall[] = [];
       let modelParts: Part[] = [];
+      let gathered: SvgHopPart[] = [];
       if (brainStreamEnabled()) {
-        const gathered: SvgHopPart[] = [];
         const started = Date.now();
         const got = await withGeminiAdmission(
           "brain",
@@ -772,7 +772,7 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
           role: "user",
           parts: [
             {
-              text: `Empty reply. Call write_svg once for id="${target.id}" filename="${target.filename}" with the full SVG markup.`,
+              text: guidedSvgMissText(gathered, target),
             },
           ],
         });
