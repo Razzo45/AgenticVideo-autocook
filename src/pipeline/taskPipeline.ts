@@ -36,6 +36,7 @@ import { classifyAttachment } from "./attachForBrain";
 import { runDir } from "./paths";
 import { stageLocalPath } from "./geminiStaging";
 import crypto from "node:crypto";
+import { svgDocument } from "./svgHops";
 import { ensureAbsRunFile, persistRunFile } from "./storage";
 import { weightFromDeliverables, type PlannedDeliverable } from "./taskWeight";
 import {
@@ -155,14 +156,10 @@ async function continueCutOffJson(opts: {
 }
 
 /**
- * Execute in plan order: all SVGs as one guided session when there are 2+,
- * every other planned file as its own JSON call (no mixed html+video ping).
+ * One planned file per call, in plan order. A finished call is saved on its own,
+ * so a later file failing does not throw away files that already landed.
  */
 export function plannedExecuteSlices(items: PlannedDeliverable[]): PlannedDeliverable[][] {
-  const svgs = items.filter(isSvgDeliverable);
-  if (svgs.length >= 2) {
-    return [svgs, ...items.filter((item) => !isSvgDeliverable(item)).map((item) => [item])];
-  }
   return items.map((item) => [item]);
 }
 
@@ -198,6 +195,29 @@ export function keepPlannedDeliverables<T extends { id: string; filename: string
     return { kept: first, dropped: written.slice(slice.length) };
   }
   return { kept, dropped: written.filter((item) => !used.has(item)) };
+}
+
+/** The SVG document, once write_svg has landed it for this planned file. Incomplete markup is not a file yet. */
+export function writtenSvgDeliverable(
+  item: PlannedDeliverable,
+  args: Record<string, unknown>,
+): Composition["deliverables"][number] | null {
+  const svg = svgDocument(String(args.svg ?? ""));
+  if (!svg) return null;
+  const id = String(args.id ?? "").trim();
+  const filename = path.basename(String(args.filename ?? "").trim());
+  const wantId = String(item.id ?? "").trim();
+  const wantName = path.basename(String(item.filename ?? "").trim());
+  const sameFile = (wantId && id === wantId) || (wantName && filename === wantName);
+  if (!sameFile) return null;
+  const deliverableName = wantName || filename;
+  if (!deliverableName) return null;
+  return {
+    id: wantId || id || path.basename(deliverableName, path.extname(deliverableName)) || "svg",
+    filename: deliverableName,
+    kind: "svg",
+    svg,
+  };
 }
 
 /** Identity of one execute call: the planned files it writes and the brain that writes them. */
@@ -609,7 +629,6 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   };
 
   const slices = plannedExecuteSlices(planned);
-  const svgTargets = plannedSvgTargets(planned);
   const onBrainStatus = (msg: string) => {
     void updateRun(run.id, { error: msg });
   };
@@ -621,7 +640,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   // so it can come from a context cache (or Gemini's implicit cache) instead of being
   // sent again for each file, continuation and rebuild.
   const sharedSystem = composeTaskInstructions(planned, attachedNames, label, shared);
-  const isGuidedSvg = (slice: PlannedDeliverable[]) => slice.length >= 2 && slice.every(isSvgDeliverable);
+  const isGuidedSvg = (slice: PlannedDeliverable[]) => slice.length > 0 && slice.every(isSvgDeliverable);
   const plainCalls = slices.filter((slice) => !isGuidedSvg(slice)).length;
   let cacheName: string | null = null;
   let cacheDead = false;
@@ -683,6 +702,14 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
     const names = slice.map((item) => item.filename || item.deliverable).join(", ");
     const sliceLabel = `${label} ${sliceIndex + 1}/${slices.length} (${names})`;
     const svgSlice = isGuidedSvg(slice);
+    const onSliceTool = async (name: string, args: Record<string, unknown>) => {
+      const response = await onBrainTool(name, args);
+      if (svgSlice && name === "write_svg" && response.ok !== false && slice[0]) {
+        const landed = writtenSvgDeliverable(slice[0], args);
+        if (landed) await saveSliceCheckpoint(dir, sliceIndex, key, [landed]);
+      }
+      return response;
+    };
     const turn: Part[] = [{ text: sliceTurnText(slice, siblings) }];
 
     const parseSlice = (raw: string) =>
@@ -720,15 +747,16 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
       });
 
     let text: string;
+    try {
     if (svgSlice) {
       text = await brainGuidedWriteSvgThenJson({
         model,
         system,
         userParts,
-        svgTargets,
+        svgTargets: plannedSvgTargets(slice),
         tools: TASK_OPTIONAL_TOOLS,
         onStatus: onBrainStatus,
-        onTool: onBrainTool,
+        onTool: onSliceTool,
       });
       text = await receive(text, undefined, sliceLabel);
     } else {
@@ -758,7 +786,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
           tools: TASK_OPTIONAL_TOOLS,
           maxRounds: 16,
           onStatus: onBrainStatus,
-          onTool: onBrainTool,
+          onTool: onSliceTool,
         });
         text = await receive(text, undefined, sliceLabel);
       } else {
@@ -801,6 +829,18 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
     for (const [id, list] of Object.entries(notes)) for (const text of list) addNote(fileNotes, id, text);
     await saveSliceCheckpoint(dir, sliceIndex, key, kept, notes);
     return kept;
+    } catch (err) {
+      if (!isCancelledError(err)) {
+        const landed = await loadSliceCheckpoint(dir, sliceIndex, key);
+        if (landed?.length) {
+          logStage(run.id, `brain ${sliceIndex + 1}/${slices.length} kept`, Date.now() - sliceStarted, {
+            files: landed.map((item) => item.filename).join(","),
+          });
+          return landed;
+        }
+      }
+      throw err;
+    }
   };
 
   // Each planned file is its own brain call. They run side by side, each as its
