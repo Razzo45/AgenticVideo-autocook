@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { loadSliceCheckpoint, loadSliceNotes, saveSliceCheckpoint, sliceCheckpointPath, sliceKey } from "../../src/pipeline/taskPipeline";
+import { loadSliceCheckpoint, loadSliceNotes, saveSliceCheckpoint, sliceCheckpointPath, sliceKey, writtenSvgDeliverable } from "../../src/pipeline/taskPipeline";
 import { isKeptTaskMetaFile } from "../../src/pipeline/taskJobs";
 
 const slice = [{ deliverable: "pdf", id: "zone3", filename: "Zone3.pdf", note: "60x18in" }];
@@ -45,6 +45,17 @@ describe("saved brain replies", () => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "{not json");
     assert.equal(await loadSliceCheckpoint(dir, 0, "k"), null);
+  });
+
+  it("keeps an SVG the moment write_svg lands a complete document for that file", () => {
+    const item = { deliverable: "svg", id: "small_icon", filename: "OVWA_75_Small_Icon.svg" };
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="20"/></svg>`;
+    const landed = writtenSvgDeliverable(item, { id: "small_icon", filename: item.filename, svg });
+    assert.equal(landed?.kind, "svg");
+    assert.equal(landed?.filename, item.filename);
+    assert.equal(landed?.svg, svg);
+    assert.equal(writtenSvgDeliverable(item, { id: "small_icon", filename: item.filename, svg: "<svg><rect" }), null);
+    assert.equal(writtenSvgDeliverable(item, { id: "other", filename: "Other.svg", svg }), null);
   });
 
   it("survives the failed-run cleanup", () => {

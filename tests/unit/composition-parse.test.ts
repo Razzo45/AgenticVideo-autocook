@@ -137,7 +137,7 @@ describe("composition parse", () => {
     );
   });
 
-  it("batches two or more SVGs into one execute slice", () => {
+  it("gives each planned file its own slice, including SVGs", () => {
     const slices = plannedExecuteSlices([
       { deliverable: "svg", filename: "A.svg" },
       { deliverable: "html", filename: "page.html" },
@@ -145,7 +145,7 @@ describe("composition parse", () => {
     ]);
     assert.deepEqual(
       slices.map((slice) => slice.map((item) => item.filename)),
-      [["A.svg", "B.svg"], ["page.html"]],
+      [["A.svg"], ["page.html"], ["B.svg"]],
     );
   });
 
