@@ -1,3 +1,5 @@
+import { isStagedMarkupNote } from "./stagedMarkup";
+
 /**
  * One SVG document delivered across streamed hops.
  * Parts are appended in arrival order. A later copy of the same document keeps the longer one.
@@ -67,4 +69,27 @@ export function assembleSvgHops(parts: SvgHopPart[]): AssembledSvg | null {
   const svg = joinSvgPieces(pieces) ?? svgDocument(texts.join(""));
   if (!svg) return null;
   return { svg, id, filename };
+}
+
+function hopBlobs(parts: SvgHopPart[]): string[] {
+  const blobs: string[] = [];
+  for (const part of parts) {
+    if (part.text?.trim()) blobs.push(part.text.trim());
+    const svg = part.functionCall?.args?.svg;
+    if (typeof svg === "string" && svg.trim()) blobs.push(svg.trim());
+  }
+  return blobs;
+}
+
+/** What to send back when a guided write_svg hop did not contain a document. */
+export function guidedSvgMissText(parts: SvgHopPart[], target: { id: string; filename: string }): string {
+  const blobs = hopBlobs(parts);
+  const ask = `Call write_svg once for id="${target.id}" filename="${target.filename}" with the full <svg>…</svg> document.`;
+  const copied = blobs.some((blob) => isStagedMarkupNote(blob) || /already stored by write_svg/i.test(blob));
+  if (copied) {
+    return `That reply was the staging note from an earlier file, not this SVG. ${ask} Do not repeat the staging note.`;
+  }
+  const chars = blobs.reduce((n, blob) => n + blob.length, 0);
+  if (!chars) return `Empty reply. ${ask}`;
+  return `That reply was not a complete SVG document (${chars} characters). ${ask}`;
 }
