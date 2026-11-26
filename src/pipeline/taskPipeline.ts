@@ -613,8 +613,18 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
   const onBrainStatus = (msg: string) => {
     void updateRun(run.id, { error: msg });
   };
-  const onBrainTool = (name: string, args: Record<string, unknown>) =>
-    executeMediaTool(name, args, toolCtx);
+  const guidedSvgPath = (filename: string) =>
+    path.join(dir, TASK_SLICES_DIR, "guided", path.basename(filename));
+  const onBrainTool = async (name: string, args: Record<string, unknown>) => {
+    const response = await executeMediaTool(name, args, toolCtx);
+    if (name === "write_svg" && response.ok !== false && typeof args.svg === "string" && args.svg.trim()) {
+      const abs = guidedSvgPath(String(args.filename ?? "mark.svg"));
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, args.svg, "utf8");
+      await persistRunFile(abs).catch(() => undefined);
+    }
+    return response;
+  };
 
   // One instruction for the whole task, then the operator's files, then a short turn
   // naming the file to write. Every call of the task shares everything up to that turn,
@@ -721,6 +731,14 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
 
     let text: string;
     if (svgSlice) {
+      const savedSvg = new Map<string, string>();
+      for (const target of svgTargets) {
+        const abs = guidedSvgPath(target.filename);
+        if (!(fs.existsSync(abs) && fs.statSync(abs).size > 0)) {
+          await ensureAbsRunFile(abs).catch(() => undefined);
+        }
+        if (fs.existsSync(abs) && fs.statSync(abs).size > 0) savedSvg.set(target.filename, fs.readFileSync(abs, "utf8"));
+      }
       text = await brainGuidedWriteSvgThenJson({
         model,
         system,
@@ -729,6 +747,7 @@ export async function jobTaskExecute(run: RunRow): Promise<void> {
         tools: TASK_OPTIONAL_TOOLS,
         onStatus: onBrainStatus,
         onTool: onBrainTool,
+        priorSvg: (target) => savedSvg.get(target.filename) ?? null,
       });
       text = await receive(text, undefined, sliceLabel);
     } else {

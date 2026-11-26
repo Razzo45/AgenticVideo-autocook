@@ -17,7 +17,7 @@ import { BRAIN_MODEL } from "./constants";
 import { brainLabel } from "./brainChoice";
 import { currentGeminiOwnerId, withGeminiAdmission } from "./geminiAdmission";
 import { DELIVERABLE_CONTINUATIONS, DELIVERABLE_MAX_OUTPUT_TOKENS, INTERRUPTED_FINISH } from "./deliverableReceive";
-import { assembleSvgHops, guidedSvgMissText, type SvgHopPart } from "./svgHops";
+import { assembleSvgHops, guidedSvgMissText, svgDocument, type SvgHopPart } from "./svgHops";
 import { logStage } from "./stageLog";
 import { stagedMarkupNote } from "./stagedMarkup";
 import {
@@ -662,6 +662,8 @@ export async function brainGuidedWriteSvgThenJson(opts: {
   onTool: BrainToolHandler;
   onStatus?: (msg: string) => void;
   perSvgAttempts?: number;
+  /** A document already stored for this file. The model is not asked again. */
+  priorSvg?: (target: GuidedSvgTarget) => string | null;
 }): Promise<string> {
   const ai = brainClient();
   const model = opts.model?.trim() || BRAIN_MODEL;
@@ -678,6 +680,12 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
   for (let i = 0; i < opts.svgTargets.length; i++) {
     const target = opts.svgTargets[i]!;
     const note = target.note?.trim() ? ` Note: ${target.note.trim()}` : "";
+    const prior = opts.priorSvg?.(target)?.trim() ?? "";
+    if (svgDocument(prior)) {
+      opts.onStatus?.(`${label} write_svg ${i + 1}/${opts.svgTargets.length} reusing ${target.filename}`);
+      await opts.onTool("write_svg", { id: target.id, filename: target.filename, svg: prior });
+      continue;
+    }
     contents.push({
       role: "user",
       parts: [
@@ -710,28 +718,43 @@ Multi-SVG mode: you will be asked for one write_svg at a time. Never emit all ma
       let gathered: SvgHopPart[] = [];
       if (brainStreamEnabled()) {
         const started = Date.now();
-        const got = await withGeminiAdmission(
-          "brain",
-          () =>
-            consumeBrainStream({
-              label: activity,
-              runSignal: brainCallSignal(),
-              onStatus: opts.onStatus,
-              keepPartial: true,
-              ...streamedDocumentBudget(),
-              extraProgress: () => svgChars(gathered),
-              onChunk: (chunk) => {
-                for (const part of hopParts(chunk)) gathered.push(part);
-              },
-              open: (signal) =>
-                ai.models.generateContentStream({
-                  model,
-                  contents,
-                  config: { ...svgConfig, abortSignal: signal },
-                }) as Promise<AsyncIterable<StreamChunk>>,
-            }),
-          { onStatus: opts.onStatus },
-        );
+        let got: BrainText;
+        try {
+          got = await withGeminiAdmission(
+            "brain",
+            () =>
+              consumeBrainStream({
+                label: activity,
+                runSignal: brainCallSignal(),
+                onStatus: opts.onStatus,
+                keepPartial: true,
+                ...streamedDocumentBudget(),
+                extraProgress: () => svgChars(gathered),
+                onChunk: (chunk) => {
+                  for (const part of hopParts(chunk)) gathered.push(part);
+                },
+                open: (signal) =>
+                  ai.models.generateContentStream({
+                    model,
+                    contents,
+                    config: { ...svgConfig, abortSignal: signal },
+                  }) as Promise<AsyncIterable<StreamChunk>>,
+              }),
+            { onStatus: opts.onStatus },
+          );
+        } catch (err) {
+          if (isCancelledError(err)) throw err;
+          const timedOut =
+            isPlatformFaultError(err) && /timed out/i.test(err instanceof Error ? err.message : String(err));
+          if (timedOut && attempt < perSvgAttempts - 1) {
+            contents.push({
+              role: "user",
+              parts: [{ text: `That try produced no SVG. ${guidedSvgMissText([], target)}` }],
+            });
+            continue;
+          }
+          throw err;
+        }
         const assembled = assembleSvgHops(gathered);
         logStage(currentGeminiOwnerId() ?? "-", `gemini ${activity}`, Date.now() - started, {
           model,
