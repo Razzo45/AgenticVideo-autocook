@@ -48,6 +48,7 @@ describe("the instruction does not suggest values", () => {
     assert.match(facts, /up to 6000 characters/);
     assert.match(facts, /3–10 seconds, 16:9 or 9:16/);
     assert.match(facts, /HTML prints in Chromium/);
+    assert.match(facts, /SVG drawn as a \.gif plays that SVG's animation/);
     assert.match(facts, /"in the style of …" phrases are removed/);
     assert.ok(text.includes(facts));
     assert.match(briefFollowUp(), /up to 6000 characters/);

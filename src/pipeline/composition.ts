@@ -187,6 +187,7 @@ export function generatorFacts(): string {
   const office = Boolean(libreOfficeBinary());
   return `Generator and renderer facts:
 - Pictures: the image model chooses its own pixel size; width and height on a source resize the result. References must be pictures (png, jpg, webp, gif, svg).
+- GIF: an SVG drawn as a .gif plays that SVG's animation for one cycle and loops. A still SVG is one frame.
 - Video clips: 3–10 seconds, 16:9 or 9:16. References are pictures only; an attached video can be placed, fitted and joined, not used as generator input. A video prompt is sent as written up to ${VIDEO_PROMPT_MAX_CHARS} characters; a longer prompt is cut there and the cut is recorded with the deliverable.
 - Music prompts: artist names, record labels and "in the style of …" phrases are removed before sending, and "kids"/"children's" are reworded, because the music model refuses them.
 - PDF: HTML prints in Chromium. ${office ? "A pptx prints through LibreOffice." : "A pdf cannot be made from a pptx on this worker (no LibreOffice); write its HTML instead."}

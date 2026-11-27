@@ -6,11 +6,13 @@
  * bytes were copied under the new name, so a ".png" deliverable was an SVG.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { prepareFonts, rendererEnv, requestedFamilies, substitutionNote } from "./fontFetch";
+import { findChromium, paintAnimatedGif, svgAnimationPlan } from "./paintGif";
 import { recordPlatformNote } from "./platformNotes";
 
 const execFileAsync = promisify(execFile);
@@ -64,6 +66,119 @@ export function svgIntrinsicSize(svg: string): { width: number; height: number }
 const MAX_DENSITY = 100_000;
 /** Sharp's guard is 268M pixels; refuse a size that would exhaust the worker first. */
 const MAX_OUTPUT_PIXELS = 80_000_000;
+/**
+ * libxml refuses an attribute longer than about 10MB unless a flag the SVG
+ * renderer does not set. A picture pasted into the markup as a data URI can
+ * pass that, and the whole file is then reported as a corrupt header.
+ */
+const SVG_RENDERER_HREF_LIMIT = 8_000_000;
+
+type PlacedSvgImage = {
+  bytes: Buffer;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fit: "cover" | "inside" | "fill";
+  position: string;
+};
+
+/** Take picture values the SVG renderer cannot parse out of the markup, to be drawn on top. */
+export function liftHeavySvgImages(svg: string, hrefLimit = SVG_RENDERER_HREF_LIMIT): { svg: string; images: PlacedSvgImage[] } {
+  const images: PlacedSvgImage[] = [];
+  const next = svg.replace(/<image\b[^>]*\/?>/gi, (tag) => {
+    const href = svgAttr(tag, "href") ?? svgAttr(tag, "xlink:href");
+    if (!href || href.length <= hrefLimit || !/^data:image\/[a-z0-9.+-]+;base64,/i.test(href)) return tag;
+    const bytes = Buffer.from(href.slice(href.indexOf(",") + 1).replace(/\s/g, ""), "base64");
+    if (bytes.length < 8) return tag;
+    const box = aspectFit(svgAttr(tag, "preserveAspectRatio"));
+    images.push({
+      bytes,
+      x: svgNum(tag, "x"),
+      y: svgNum(tag, "y"),
+      width: svgNum(tag, "width"),
+      height: svgNum(tag, "height"),
+      fit: box.fit,
+      position: box.position,
+    });
+    return "";
+  });
+  return { svg: next, images };
+}
+
+function svgAttr(tag: string, name: string): string | undefined {
+  const match = tag.match(new RegExp(`(?:^|\\s)${name}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i"));
+  return match?.[2];
+}
+
+function svgNum(tag: string, name: string): number {
+  const raw = svgAttr(tag, name);
+  if (!raw || !/^-?[\d.]+(?:px)?$/i.test(raw.trim())) return 0;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** How an SVG image fills its box. Default is meet, centred. */
+function aspectFit(value: string | undefined): { fit: PlacedSvgImage["fit"]; position: string } {
+  const text = (value || "xMidYMid meet").trim();
+  if (text === "none") return { fit: "fill", position: "centre" };
+  const align = text.split(/\s+/)[0] || "xMidYMid";
+  const fit: PlacedSvgImage["fit"] = /\bslice\b/i.test(text) ? "cover" : "inside";
+  const x = align.includes("xMin") ? "left" : align.includes("xMax") ? "right" : "";
+  const y = align.includes("YMin") ? "top" : align.includes("YMax") ? "bottom" : "";
+  const position = [x, y].filter(Boolean).join(" ") || "centre";
+  return { fit, position };
+}
+
+async function overlaysFor(
+  images: PlacedSvgImage[],
+  canvasW: number,
+  canvasH: number,
+  scaleX: number,
+  scaleY: number,
+): Promise<Array<{ input: Buffer; left: number; top: number }>> {
+  const layers: Array<{ input: Buffer; left: number; top: number }> = [];
+  for (const image of images) {
+    let w = Math.round(image.width * scaleX);
+    let h = Math.round(image.height * scaleY);
+    if (!(w > 0 && h > 0)) {
+      try {
+        const meta = await sharp(image.bytes, { limitInputPixels: false }).metadata();
+        w = Math.round((meta.width ?? 0) * scaleX);
+        h = Math.round((meta.height ?? 0) * scaleY);
+      } catch {
+        w = 0;
+        h = 0;
+      }
+    }
+    if (!(w > 0 && h > 0) || !(canvasW > 0 && canvasH > 0)) continue;
+    let box: Buffer;
+    try {
+      box = await sharp(image.bytes, { limitInputPixels: false })
+        .resize(w, h, { fit: image.fit, position: image.position })
+        .png()
+        .toBuffer();
+    } catch {
+      recordPlatformNote("A picture inside the SVG could not be read, so the file was drawn without it.");
+      continue;
+    }
+    const x = image.x * scaleX;
+    const y = image.y * scaleY;
+    const left = Math.max(0, Math.round(x));
+    const top = Math.max(0, Math.round(y));
+    const cropLeft = Math.max(0, Math.min(w, Math.round(-Math.min(x, 0))));
+    const cropTop = Math.max(0, Math.min(h, Math.round(-Math.min(y, 0))));
+    const cropW = Math.min(w - cropLeft, canvasW - left);
+    const cropH = Math.min(h - cropTop, canvasH - top);
+    if (cropW < 1 || cropH < 1 || left >= canvasW || top >= canvasH) continue;
+    const piece =
+      cropLeft || cropTop || cropW !== w || cropH !== h
+        ? await sharp(box).extract({ left: cropLeft, top: cropTop, width: cropW, height: cropH }).png().toBuffer()
+        : box;
+    layers.push({ input: piece, left, top });
+  }
+  return layers;
+}
 
 /**
  * A private scratch file for one write. Callers of the same dest used to share
@@ -92,6 +207,11 @@ export type ConvertOptions = {
   /** Exact output pixels, when the plan names them. Otherwise the source's own size. */
   width?: number;
   height?: number;
+  /**
+   * A picture href longer than this is drawn onto the SVG afterwards.
+   * The SVG renderer rejects a longer value (libxml's buffer limit).
+   */
+  svgImageHrefLimit?: number;
 };
 
 /**
@@ -122,12 +242,50 @@ export async function convertImage(
     // No size asked for: the SVG's own size (its width/height, else its viewBox), 1 unit = 1 px.
     // A size asked for: drawn at that size, so it is sharp rather than scaled up from small.
     const svgText = buf.toString("utf8");
-    const size = svgIntrinsicSize(svgText);
-    const long = size ? Math.max(size.width, size.height) : 0;
-    const density = resize && long ? Math.min(MAX_DENSITY, Math.max(1, (72 * Math.max(opts.width!, opts.height!)) / long)) : 72;
-    const drawn = await drawSvgWithFonts(src, svgText, dest, density, resize ? opts : {});
-    input = drawn ? sharp(drawn, { limitInputPixels: false }) : sharp(buf, { density, limitInputPixels: false });
-    if (drawn && resize) opts = {};
+    if (target === "gif") {
+      const painted = await paintSvgGif(src, svgText, dest, opts);
+      if (painted) return dest;
+    }
+    const hrefLimit = opts.svgImageHrefLimit ?? SVG_RENDERER_HREF_LIMIT;
+    const lifted = liftHeavySvgImages(svgText, hrefLimit);
+    let drawPath = src;
+    let drawBuf = buf;
+    let tempSvg: string | null = null;
+    if (lifted.images.length) {
+      tempSvg = path.join(os.tmpdir(), `svg-draw-${process.pid}-${Date.now().toString(36)}.svg`);
+      fs.writeFileSync(tempSvg, lifted.svg);
+      drawPath = tempSvg;
+      drawBuf = Buffer.from(lifted.svg);
+    }
+    try {
+      const size = svgIntrinsicSize(svgText);
+      const long = size ? Math.max(size.width, size.height) : 0;
+      const density = resize && long ? Math.min(MAX_DENSITY, Math.max(1, (72 * Math.max(opts.width!, opts.height!)) / long)) : 72;
+      const childSize = !lifted.images.length && resize ? { width: opts.width, height: opts.height } : {};
+      const drawn = await drawSvgWithFonts(drawPath, lifted.svg, dest, density, childSize);
+      if (lifted.images.length) {
+        const base = drawn ?? (await sharp(drawBuf, { density, limitInputPixels: false }).png().toBuffer());
+        const meta = await sharp(base).metadata();
+        const canvasW = meta.width ?? 0;
+        const canvasH = meta.height ?? 0;
+        const declared = svgIntrinsicSize(svgText);
+        const scaleX = declared && canvasW ? canvasW / declared.width : 1;
+        const scaleY = declared && canvasH ? canvasH / declared.height : 1;
+        const layers = await overlaysFor(lifted.images, canvasW, canvasH, scaleX, scaleY);
+        if (layers.length) {
+          recordPlatformNote(
+            "A picture in this SVG was placed on the drawing. The SVG renderer cannot hold a picture that large inside the file.",
+          );
+        }
+        const placed = layers.length ? await sharp(base).composite(layers).png().toBuffer() : base;
+        input = sharp(placed, { limitInputPixels: false });
+      } else {
+        input = drawn ? sharp(drawn, { limitInputPixels: false }) : sharp(buf, { density, limitInputPixels: false });
+        if (drawn && resize) opts = {};
+      }
+    } finally {
+      if (tempSvg) fs.rmSync(tempSvg, { force: true });
+    }
   } else {
     input = sharp(buf, { animated: false, limitInputPixels: MAX_OUTPUT_PIXELS });
   }
@@ -147,6 +305,34 @@ export async function convertImage(
     fs.rmSync(tmp, { force: true });
   }
   return dest;
+}
+
+/**
+ * A GIF whose SVG animates is that timeline, one cycle, looping.
+ * A still SVG, or a worker with no browser, keeps the single-frame draw.
+ */
+async function paintSvgGif(
+  src: string,
+  svgText: string,
+  dest: string,
+  opts: ConvertOptions,
+): Promise<boolean> {
+  const plan = svgAnimationPlan(svgText);
+  if (!plan) return false;
+  const size = svgIntrinsicSize(svgText);
+  const width = Math.round(opts.width ?? size?.width ?? 0);
+  const height = Math.round(opts.height ?? size?.height ?? 0);
+  if (!(width > 0 && height > 0)) throw new Error(`${path.basename(src)} has no size to paint as a GIF`);
+  if (width * height > MAX_OUTPUT_PIXELS) throw new Error(`${width}x${height} is too large to render`);
+  if (!findChromium()) {
+    recordPlatformNote("The GIF is one frame of the SVG; this worker has no browser to paint the animation.");
+    return false;
+  }
+  const report = await prepareFonts([svgText]);
+  const note = substitutionNote(report, "The SVG renderer");
+  if (note) recordPlatformNote(note);
+  await paintAnimatedGif({ svg: svgText, dest, width, height, plan });
+  return true;
 }
 
 /** Encoder arguments for an audio file whose name says this format. */
