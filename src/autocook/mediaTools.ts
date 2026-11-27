@@ -250,13 +250,20 @@ async function generatePngBytes(
             contents: [{ role: "user", parts }],
             config: { responseModalities: ["IMAGE", "TEXT"] },
           });
+          const finish = (result.candidates ?? [])
+            .map((c) => (c as { finishReason?: string }).finishReason)
+            .find((reason) => !!reason);
           for (const c of result.candidates ?? []) {
             for (const part of c.content?.parts ?? []) {
               const data = (part as { inlineData?: { data?: string } }).inlineData;
               if (data?.data) return Buffer.from(data.data, "base64");
             }
           }
-          throw new Error("generate_image: model returned no image bytes");
+          throw new Error(
+            finish
+              ? `generate_image: model returned no image bytes (${finish})`
+              : "generate_image: model returned no image bytes",
+          );
         })(),
         {
           timeoutMs: IMAGE_GEN_TIMEOUT_MS,

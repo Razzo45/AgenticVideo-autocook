@@ -8,6 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import JSZip from "jszip";
 import PptxGenJS from "pptxgenjs";
+import sharp from "sharp";
 import { z } from "zod";
 import { executeMediaTool, type MediaToolContext } from "../autocook/mediaTools";
 import { exportPdf } from "../autocook/exportPdf";
@@ -466,16 +467,38 @@ export async function buildComposition(opts: {
     onStatus: opts.onStatus,
   };
   const cache = new Map<string, Promise<string>>();
-  const slotPath = async (delId: string, slotId: string, source: MediaSource, filename?: string): Promise<string> => {
+  const slotPath = async (
+    delId: string,
+    slotId: string,
+    source: MediaSource,
+    filename: string | undefined,
+    leaveBlank: boolean,
+  ): Promise<string> => {
     const key = cacheKey(source);
     const existing = cache.get(key);
     if (existing) return existing;
+    const id = safeId(`${delId}-${slotId}`);
     const run = resolveSource({
       source,
-      id: safeId(`${delId}-${slotId}`),
+      id,
       filename: filename || defaultMediaName(source, slotId),
       ctx,
       ownerId: opts.ownerId,
+    }).catch(async (err) => {
+      // A picture the model does not return is the brain's miss. The document
+      // still assembles, with that space empty. A file that is itself the picture
+      // still fails, because a blank file would stand in for the deliverable.
+      if (!leaveBlank || source.kind !== "generate" || (source.media && source.media !== "image")) throw err;
+      const blank = await blankForMissingImage({
+        err,
+        id,
+        ownerId: opts.ownerId,
+        dest: path.join(stagingDir, "slots", `${id}.png`),
+        width: source.width,
+        height: source.height,
+      });
+      if (!blank) throw err;
+      return blank;
     });
     cache.set(key, run);
     return run;
@@ -489,8 +512,8 @@ export async function buildComposition(opts: {
   const pending: Promise<unknown>[] = [];
   for (const row of prepared) {
     const { item, slots } = row;
-    const queue = (slotId: string, source: MediaSource, filename?: string) => {
-      const task = slotPath(item.id, slotId, source, filename);
+    const queue = (slotId: string, source: MediaSource, filename: string | undefined, leaveBlank: boolean) => {
+      const task = slotPath(item.id, slotId, source, filename, leaveBlank);
       slots.set(slotId, task);
       pending.push(task);
     };
@@ -498,14 +521,14 @@ export async function buildComposition(opts: {
       item.slides?.forEach((slide, slideIndex) => {
         slide.elements.forEach((el, elIndex) => {
           if ((el.type === "image" || el.type === "video" || el.type === "audio") && el.source) {
-            queue(`s${slideIndex}e${elIndex}`, el.source);
+            queue(`s${slideIndex}e${elIndex}`, el.source, undefined, el.type === "image");
           }
         });
       });
     } else if (item.kind === "html" || ((item.kind === "pdf" || item.kind === "docx") && item.html)) {
-      for (const asset of item.assets ?? []) queue(asset.id, asset.source, asset.filename);
+      for (const asset of item.assets ?? []) queue(asset.id, asset.source, asset.filename, true);
     } else if (item.kind === "image" && item.source) {
-      queue("file", item.source, item.filename);
+      queue("file", item.source, item.filename, false);
     } else if (item.kind === "video") {
       pending.push(buildVideo(item, ctx, opts.ownerId, opts.onStatus).then((abs) => slots.set("file", Promise.resolve(abs))));
     } else if (item.kind === "audio") {
@@ -800,6 +823,50 @@ function normalizeSource(raw: unknown): MediaSource | undefined {
     style: str(src.style),
     instrumental: bool(src.instrumental),
   };
+}
+
+/** "" when the model returned no picture and named no reason. null for any other error. */
+export function missingImageFinish(err: unknown): string | null {
+  if (!(err instanceof Error)) return null;
+  const marker = "generate_image: model returned no image bytes";
+  const at = err.message.indexOf(marker);
+  if (at < 0) return null;
+  const paren = /^\s*\(([^)]*)\)/.exec(err.message.slice(at + marker.length));
+  return paren ? paren[1] : "";
+}
+
+async function writeBlankImage(dest: string, width: number, height: number): Promise<void> {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  await sharp({
+    create: {
+      width: Math.max(1, Math.round(width)),
+      height: Math.max(1, Math.round(height)),
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .png()
+    .toFile(dest);
+}
+
+/** A transparent picture of the size the brain asked for, or null when this is a different failure. */
+export async function blankForMissingImage(opts: {
+  err: unknown;
+  id: string;
+  ownerId: string;
+  dest: string;
+  width?: number;
+  height?: number;
+}): Promise<string | null> {
+  const finish = missingImageFinish(opts.err);
+  if (finish === null) return null;
+  const why = finish ? ` (${finish})` : "";
+  recordPlatformNote(
+    `The image model returned no picture${why} for ${opts.id}, so that space was left blank.`,
+    `${opts.ownerId}:${opts.id}`,
+  );
+  await writeBlankImage(opts.dest, opts.width ?? 1, opts.height ?? 1);
+  return opts.dest;
 }
 
 async function resolveSource(opts: {
